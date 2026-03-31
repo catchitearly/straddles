@@ -15,7 +15,7 @@ TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 
 RESOLUTION = "5"
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
-EXPIRY = "07APR26" # Update this weekly/monthly as needed
+EXPIRY = "26407" # Update this weekly/monthly as needed
 MARKET_OPEN = "09:15"
 MARKET_CLOSE = "15:30"
 
@@ -112,7 +112,9 @@ def main():
     try:
         fyers = get_fyers()
         atm = get_current_atm(fyers)
-        today = date.today().isoformat()
+        # --- CHANGE THIS LINE ---
+        # Format MUST be "YYYY-MM-DD"
+        target_date = "2026-03-30"
         
         results = {}
         for offset in OFFSETS:
