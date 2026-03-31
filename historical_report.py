@@ -100,7 +100,7 @@ def build_report(straddle_data, atm):
                                  line=dict(color="#64748b", width=1, dash="dot")), row=idx+1, col=1)
 
     fig.update_layout(height=300*n, template="plotly_dark", paper_bgcolor=BG_COLOR, plot_bgcolor=BG_COLOR,
-                      title=f"Nifty Straddle Analysis - {date.today()}", showlegend=False)
+                      title=f"Nifty Straddle Analysis - {target_date}", showlegend=False)
     
     # Save to file
     fig.write_html("index.html")
@@ -123,8 +123,8 @@ def main():
             pe_sym = f"NSE:NIFTY{EXPIRY}{strike}PE"
             
             logger.info(f"Processing Strike: {strike}")
-            ce_df = fetch_candles(fyers, ce_sym, today, today)
-            pe_df = fetch_candles(fyers, pe_sym, today, today)
+            ce_df = fetch_candles(fyers, ce_sym, target_date, target_date)
+            pe_df = fetch_candles(fyers, pe_sym, target_date, target_date)
             st_df = compute_straddle(ce_df, pe_df)
             
             if not st_df.empty:
