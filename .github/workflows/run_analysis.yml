@@ -2,18 +2,21 @@ name: 30-Min Straddle Update
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # Runs every 30 minutes
-  workflow_dispatch:        # Allows you to run it manually for testing
+    - cron: '*/30 * * * *'  # Runs every 30 mins
+  workflow_dispatch:        # Allows manual trigger
+
+permissions:
+  contents: write           # CRITICAL: Allows the bot to push the HTML back to your repo
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -25,12 +28,24 @@ jobs:
         env:
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           FYERS_ACCESS_TOKEN: ${{ secrets.FYERS_ACCESS_TOKEN }}
+        # This runs your script. If it fails, the Action stops here.
         run: python historical_report.py
+
+      - name: Debug - Verify File Creation
+        run: |
+          if [ -f index.html ]; then
+            echo "✅ index.html exists."
+            ls -lh index.html
+          else
+            echo "❌ index.html was NOT created. Check Python logs above."
+            exit 1
+          fi
 
       - name: Commit and Push HTML
         run: |
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
           git add index.html
+          # The '|| exit 0' prevents failure if the HTML hasn't changed since the last run
           git commit -m "Update Straddle Report: $(date)" || exit 0
           git push
