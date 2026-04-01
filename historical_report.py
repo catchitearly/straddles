@@ -10,7 +10,7 @@ from fyers_apiv3 import fyersModel
 # --- CONFIGURATION ---
 CLIENT_ID = os.getenv("CLIENT_ID") 
 TOKEN = os.getenv("FYERS_ACCESS_TOKEN") 
-TARGET_DATE = "2026-03-30" # Change to desired date
+TARGET_DATE = "2026-04-01" # Change to desired date
 EXPIRY = "26407"  
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 
