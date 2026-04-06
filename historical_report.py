@@ -10,7 +10,7 @@ from fyers_apiv3 import fyersModel
 # --- CONFIGURATION ---
 CLIENT_ID = os.getenv("CLIENT_ID") 
 TOKEN = os.getenv("FYERS_ACCESS_TOKEN") 
-TARGET_DATE = "2026-04-02" # Change to desired date
+TARGET_DATE = "2026-04-06" # Change to desired date
 EXPIRY = "26407"  
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 
@@ -186,7 +186,7 @@ def fetch_candles(fyers, symbol, date):
 def main():
     fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=TOKEN, log_path="")
     # For testing, we use a fixed ATM. In live, you can call get_current_atm(fyers)
-    atm = 22400 
+    atm = 22700 
     
     results = {}
     for offset in OFFSETS:
