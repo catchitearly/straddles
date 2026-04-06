@@ -186,7 +186,7 @@ def fetch_candles(fyers, symbol, date):
 def main():
     fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=TOKEN, log_path="")
     # For testing, we use a fixed ATM. In live, you can call get_current_atm(fyers)
-    atm = 22700 
+    atm = 22800 
     
     results = {}
     for offset in OFFSETS:
