@@ -1,0 +1,48 @@
+name: Straddle Dashboard
+
+on:
+  # Run automatically on weekdays at 15:35 IST (10:05 UTC)
+  schedule:
+    - cron: "05 10 * * 1-5"
+
+  # Also allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  run-dashboard:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout your repository
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 2. Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 3. Install dependencies
+      - name: Install Dependencies
+        run: |
+          pip install fyers-apiv3 pandas plotly
+
+      # 4. Run the straddle script
+      #    Secrets must be set in: Repo → Settings → Secrets → Actions
+      - name: Run Straddle Script
+        env:
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          FYERS_ACCESS_TOKEN: ${{ secrets.FYERS_ACCESS_TOKEN }}
+        run: |
+          python straddle.py
+
+      # 5. Upload the generated HTML file as a downloadable artifact
+      - name: Upload Dashboard HTML
+        uses: actions/upload-artifact@v4
+        with:
+          name: straddle-dashboard-${{ github.run_id }}
+          path: "*.html"
+          retention-days: 30   # Keep artifact for 30 days
+        # Upload even if the script partially fails
+        if: always()
