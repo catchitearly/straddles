@@ -117,7 +117,6 @@ def build_dashboard_html(straddle_data, atm, rankings):
     ])
 
     # --- Build speed data for JS ---
-    # Format: { strike: [ {time: "HH:MM", price: float}, ... ], ... }
     speed_data = {}
     for strike, df in straddle_data.items():
         speed_data[str(strike)] = [
@@ -310,17 +309,19 @@ def build_dashboard_html(straddle_data, atm, rankings):
         durationMins.textContent = `${{mins}} min`;
 
         const rows = strikes.map((strike, idx) => {{
-            const color   = colors[idx % colors.length];
-            const fromPt  = getPriceAt(strike, fromIdx);
-            const toPt    = getPriceAt(strike, toIdx);
+            const color     = colors[idx % colors.length];
+            const fromPt    = getPriceAt(strike, fromIdx);
+            const toPt      = getPriceAt(strike, toIdx);
 
             if (!fromPt || !toPt) return null;
 
-            const delta   = toPt.price - fromPt.price;
-            const speed   = mins > 0 ? (delta / mins) : 0;
-            const absSpd  = Math.abs(speed).toFixed(2);
-            const dir     = delta > 2 ? 'UP' : delta < -2 ? 'DOWN' : 'FLAT';
-            const badge   = dir === 'UP'
+            const delta     = toPt.price - fromPt.price;
+            const speed     = mins > 0 ? (delta / mins) : 0;
+            const absSpd    = Math.abs(speed).toFixed(2);
+            const deltaSign = delta >= 0 ? '+' : '';
+            const speedSign = speed >= 0 ? '+' : '';
+            const dir       = delta > 2 ? 'UP' : delta < -2 ? 'DOWN' : 'FLAT';
+            const badge     = dir === 'UP'
                 ? `<span class="badge badge-up">▲ UP</span>`
                 : dir === 'DOWN'
                     ? `<span class="badge badge-down">▼ DOWN</span>`
@@ -338,9 +339,9 @@ def build_dashboard_html(straddle_data, atm, rankings):
                 <td style="color:{MUTED};">${{toPt.time}}</td>
                 <td>${{fromPt.price.toFixed(2)}}</td>
                 <td>${{toPt.price.toFixed(2)}}</td>
-                <td style="color:${{deltaColor}};font-weight:bold;">${{{delta >= 0 ? '+' : ''}}}${{delta.toFixed(2)}}</td>
+                <td style="color:${{deltaColor}};font-weight:bold;">${{deltaSign}}${{delta.toFixed(2)}}</td>
                 <td style="color:{BLUE};">${{mins}} min</td>
-                <td style="color:${{spdColor}};font-weight:bold;">${{(speed >= 0 ? '+' : '')}}${{speed.toFixed(2)}} pts/min</td>
+                <td style="color:${{spdColor}};font-weight:bold;">${{speedSign}}${{speed.toFixed(2)}} pts/min</td>
                 <td>${{badge}}</td>
             </tr>`;
         }}).filter(Boolean);
