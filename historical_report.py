@@ -169,12 +169,9 @@ def build_dashboard_html(straddle_data, atm, rankings):
     </body>
     </html>
     """
-    ist_time = datetime.now().strftime("%H%M%S")
-    filename = f"{TARGET_DATE}_{ist_time}.html"
-    with open(filename, "w", encoding="utf-8") as f:
+    
+    with open("index.html", "w", encoding="utf-8") as f:
         f.write(final_html)
-    #with open("index.html", "w", encoding="utf-8") as f:
-        #f.write(final_html)
 
 # --- MAIN EXECUTION ---
 
