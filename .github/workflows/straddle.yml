@@ -3,7 +3,7 @@ name: Straddle Dashboard
 on:
   schedule:
     - cron: "05 10 * * 1-5"   # 3:35 PM IST on weekdays
-  workflow_dispatch:            # Manual trigger from Actions UI
+  workflow_dispatch:
 
 jobs:
   run-dashboard:
@@ -35,8 +35,12 @@ jobs:
       - name: List output folder (debug)
         if: always()
         run: |
-          echo "=== Files in output/ ==="
-          ls -lh output/ || echo "output/ folder is missing or empty"
+          echo "=== Current directory ==="
+          pwd
+          echo "=== All files in workspace ==="
+          find . -not -path './.git/*' -type f
+          echo "=== output/ contents ==="
+          ls -lh output/ 2>/dev/null || echo "output/ folder missing or empty"
 
       - name: Upload Dashboard HTML as Artifact
         uses: actions/upload-artifact@v4
@@ -48,15 +52,15 @@ jobs:
           retention-days: 30
 
       - name: Commit and Push HTML to Repository
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Only commit if there are actual files in output/
-          if [ -d "output" ] && [ "$(ls -A output/)" ]; then
+          if [ -d "output" ] && [ "$(ls -A output/ 2>/dev/null)" ]; then
             git add output/
-            git diff --cached --quiet && echo "No changes to commit" || \
-              git commit -m "straddle dashboard $(TZ='Asia/Kolkata' date +'%Y-%m-%d %H:%M IST')" && git push
+            git diff --cached --quiet \
+              && echo "No changes to commit" \
+              || (git commit -m "straddle dashboard $(TZ='Asia/Kolkata' date +'%Y-%m-%d %H:%M IST')" && git push)
           else
-            echo "No HTML files found in output/ — skipping commit"
+            echo "output/ is empty or missing — nothing to commit"
           fi
