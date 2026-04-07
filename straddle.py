@@ -12,7 +12,7 @@ from fyers_apiv3 import fyersModel
 # --- CONFIGURATION ---
 CLIENT_ID = os.getenv("CLIENT_ID")
 TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
-TARGET_DATE = "2026-04-02"
+TARGET_DATE = "2026-04-01"
 EXPIRY = "26407"
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 
@@ -440,7 +440,7 @@ def main():
     if profile.get("s") != "ok":
         logger.error("Fyers auth failed. Token may be expired."); return
 
-    atm = 22400
+    atm = 22900
     results = {}
 
     for offset in OFFSETS:
