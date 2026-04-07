@@ -15,6 +15,11 @@ TARGET_DATE = "2026-04-07"  # Change to desired date
 EXPIRY = "26407"
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 
+# Output folder
+OUTPUT_DIR = "output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+print(f"[INFO] Output directory created/confirmed: {os.path.abspath(OUTPUT_DIR)}")
+
 # UI Theme Colors
 BG = "#0b0f1a"
 CARD = "#111b27"
@@ -77,7 +82,6 @@ def compute_rankings(straddle_data: dict) -> list:
 # --- DASHBOARD BUILDER ---
 
 def build_dashboard_html(straddle_data, atm, rankings):
-    # 1. Main Straddle Charts
     strikes = sorted(straddle_data.keys())
     fig_main = make_subplots(
         rows=len(strikes), cols=1,
@@ -102,7 +106,6 @@ def build_dashboard_html(straddle_data, atm, rankings):
         paper_bgcolor=BG, plot_bgcolor=BG, showlegend=False
     )
 
-    # 2. Ranking Chart (Horizontal Bar)
     fig_rank = go.Figure(go.Bar(
         y=[str(r["strike"]) for r in rankings],
         x=[r["smoothness"] for r in rankings],
@@ -120,7 +123,6 @@ def build_dashboard_html(straddle_data, atm, rankings):
         xaxis=dict(range=[0, 110])
     )
 
-    # 3. Ranking Table HTML
     table_rows = "".join([
         f"""<tr style="border-bottom: 1px solid {BORDER};">
             <td style="padding:10px;">{r['rank']}</td>
@@ -131,7 +133,6 @@ def build_dashboard_html(straddle_data, atm, rankings):
         </tr>""" for r in rankings
     ])
 
-    # Convert figures to HTML components
     main_chart_html = fig_main.to_html(full_html=False, include_plotlyjs='cdn')
     rank_chart_html = fig_rank.to_html(full_html=False, include_plotlyjs=False)
 
@@ -184,16 +185,16 @@ def build_dashboard_html(straddle_data, atm, rankings):
     </html>
     """
 
-    # Generate filename with IST timestamp
     ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
     ist_time_str = ist_now.strftime("%H%M%S")
     filename = f"{TARGET_DATE}_{ist_time_str}.html"
+    filepath = os.path.join(OUTPUT_DIR, filename)
 
-    with open(filename, "w", encoding="utf-8") as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         f.write(final_html)
 
-    logger.info(f"Dashboard saved as: {filename}")
-    return filename
+    logger.info(f"Dashboard saved as: {filepath}")
+    return filepath
 
 
 # --- DATA FETCHING ---
@@ -208,6 +209,7 @@ def fetch_candles(fyers, symbol, date):
         "cont_flag": "1"
     }
     resp = fyers.history(data=data)
+    logger.info(f"  Response for {symbol}: {resp.get('s')} | message: {resp.get('message', '-')}")
     if resp.get("s") == "ok" and resp.get("candles"):
         df = pd.DataFrame(resp["candles"], columns=["epoch", "open", "high", "low", "close", "volume"])
         df["time"] = (
@@ -222,12 +224,34 @@ def fetch_candles(fyers, symbol, date):
 # --- MAIN EXECUTION ---
 
 def main():
-    fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=TOKEN, log_path="")
-    atm = 22700  # Fixed ATM for testing; replace with live lookup if needed
+    # Validate env vars first
+    if not CLIENT_ID:
+        logger.error("CLIENT_ID environment variable is not set. Aborting.")
+        return
+    if not TOKEN:
+        logger.error("FYERS_ACCESS_TOKEN environment variable is not set. Aborting.")
+        return
 
+    logger.info(f"CLIENT_ID  : {CLIENT_ID}")
+    logger.info(f"TOKEN      : {TOKEN[:10]}...{TOKEN[-5:] if len(TOKEN) > 15 else '(too short)'}")
+    logger.info(f"TARGET_DATE: {TARGET_DATE}")
+    logger.info(f"EXPIRY     : {EXPIRY}")
+
+    fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=TOKEN, log_path="")
+
+    # Quick auth check
+    profile = fyers.get_profile()
+    logger.info(f"Profile check: {profile.get('s')} | {profile.get('message', '-')}")
+    if profile.get("s") != "ok":
+        logger.error("Fyers authentication failed. Token may be expired. Update FYERS_ACCESS_TOKEN secret.")
+        return
+
+    atm = 22700
     results = {}
+
     for offset in OFFSETS:
         strike = atm + offset
+        logger.info(f"Fetching strike {strike}...")
         ce_df = fetch_candles(fyers, f"NSE:NIFTY{EXPIRY}{strike}CE", TARGET_DATE)
         pe_df = fetch_candles(fyers, f"NSE:NIFTY{EXPIRY}{strike}PE", TARGET_DATE)
 
@@ -241,13 +265,16 @@ def main():
             merged['v'] = merged['volume_x'] + merged['volume_y']
             merged['vwap'] = (merged['straddle'] * merged['v']).cumsum() / merged['v'].cumsum()
             results[strike] = merged
+            logger.info(f"  Strike {strike}: {len(merged)} rows merged OK")
+        else:
+            logger.warning(f"  Strike {strike}: No data (CE empty={ce_df.empty}, PE empty={pe_df.empty})")
 
     if results:
         rankings = compute_rankings(results)
-        filename = build_dashboard_html(results, atm, rankings)
-        logger.info(f"Dashboard with Rankings successfully created: {filename}")
+        filepath = build_dashboard_html(results, atm, rankings)
+        logger.info(f"Dashboard successfully created: {filepath}")
     else:
-        logger.error("No data retrieved. Check Expiry/Token.")
+        logger.error("No data retrieved for any strike. Check TOKEN, EXPIRY, and TARGET_DATE.")
 
 
 if __name__ == "__main__":
