@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      contents: write           # Required to push files back to the repo
+      contents: write
 
     steps:
       - name: Checkout Repository
@@ -36,7 +36,7 @@ jobs:
         if: always()
         run: |
           echo "=== Files in output/ ==="
-          ls -lh output/ || echo "output/ folder not found"
+          ls -lh output/ || echo "output/ folder is missing or empty"
 
       - name: Upload Dashboard HTML as Artifact
         uses: actions/upload-artifact@v4
@@ -51,6 +51,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add output/
-          git diff --cached --quiet || git commit -m "Add straddle dashboard [$(date +'%Y-%m-%d %H:%M IST' --date='TZ=\"Asia/Kolkata\"')]"
-          git push
+
+          # Only commit if there are actual files in output/
+          if [ -d "output" ] && [ "$(ls -A output/)" ]; then
+            git add output/
+            git diff --cached --quiet && echo "No changes to commit" || \
+              git commit -m "straddle dashboard $(TZ='Asia/Kolkata' date +'%Y-%m-%d %H:%M IST')" && git push
+          else
+            echo "No HTML files found in output/ — skipping commit"
+          fi
