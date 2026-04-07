@@ -1,35 +1,30 @@
 name: Straddle Dashboard
 
 on:
-  # Run automatically on weekdays at 15:35 IST (10:05 UTC)
   schedule:
-    - cron: "05 10 * * 1-5"
-
-  # Also allow manual trigger from GitHub Actions UI
-  workflow_dispatch:
+    - cron: "05 10 * * 1-5"   # 3:35 PM IST on weekdays
+  workflow_dispatch:            # Manual trigger from Actions UI
 
 jobs:
   run-dashboard:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write           # Required to push files back to the repo
+
     steps:
-      # 1. Checkout your repository
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 3. Install dependencies
       - name: Install Dependencies
         run: |
           pip install fyers-apiv3 pandas plotly
 
-      # 4. Run the straddle script
-      #    Secrets must be set in: Repo → Settings → Secrets → Actions
       - name: Run Straddle Script
         env:
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
@@ -37,12 +32,25 @@ jobs:
         run: |
           python straddle.py
 
-      # 5. Upload the generated HTML file as a downloadable artifact
-      - name: Upload Dashboard HTML
+      - name: List output folder (debug)
+        if: always()
+        run: |
+          echo "=== Files in output/ ==="
+          ls -lh output/ || echo "output/ folder not found"
+
+      - name: Upload Dashboard HTML as Artifact
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: straddle-dashboard-${{ github.run_id }}
-          path: "*.html"
-          retention-days: 30   # Keep artifact for 30 days
-        # Upload even if the script partially fails
-        if: always()
+          path: output/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Commit and Push HTML to Repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/
+          git diff --cached --quiet || git commit -m "Add straddle dashboard [$(date +'%Y-%m-%d %H:%M IST' --date='TZ=\"Asia/Kolkata\"')]"
+          git push
