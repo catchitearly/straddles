@@ -1,42 +1,3 @@
-
-
-import os import math import json import logging import pandas as pd import plotly.graph_objects as go from plotly.subplots import make_subplots from datetime import datetime from zoneinfo import ZoneInfo from fyers_apiv3 import fyersModel # --- CONFIGURATION --- CLIENT_ID = os.getenv("CLIENT_ID")
-
-pasted
-
-edit code to fetch 1 min  and time slider also change by 1 min. rest everything remains same
-
-09:12
-Here are the two changes needed:
-
-"resolution": "5" → "resolution": "1" in fetch_candles
-Slider step stays 1, but window durations change: 30 candles = 30min, 60 candles = 60min (since each candle is now 1min)
-
-View the uploaded file to get exact strings for replacement
-View the uploaded file to get exact strings for replacement
-I'll work directly from the document in context.
-
-
-Ran 2 commands, read a file
-Ran 2 commands, read a file
-Three exact changes made:
-
-fetch_candles — "resolution": "5" → "resolution": "1" (fetches 1-min candles from Fyers)
-calcStats in JS — * 5 → * 1 in the mins calculation (each candle now = 1 min, so duration is just tIdx - fromIdx)
-updateTable in JS — window sizes updated to 30 and 60 candles (was 6 and 12) so the 30-min and 60-min windows still represent the correct real-time durations
-The slider already steps by 1 candle, so it now moves 1 minute at a time automatically — no other change needed there.
-
-
-Straddle
-PY 
-
-
-
-
-Claude is AI and can make mistakes. Please double-check responses.
-Straddle · PY
-Copy
-
 import os
 import math
 import json
@@ -47,18 +8,18 @@ from plotly.subplots import make_subplots
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fyers_apiv3 import fyersModel
- 
+
 # --- CONFIGURATION ---
 CLIENT_ID = os.getenv("CLIENT_ID")
 TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 TARGET_DATE = "2026-04-10"
 EXPIRY = "26413"
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
- 
+
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 print(f"[INFO] Output directory: {os.path.abspath(OUTPUT_DIR)}")
- 
+
 BG = "#0b0f1a"
 CARD = "#111b27"
 BORDER = "#1e2d40"
@@ -68,19 +29,19 @@ ACCENT = "#00e5b0"
 BLUE = "#38bdf8"
 RED = "#ff4560"
 STRIKE_COLORS = ["#38bdf8", "#a78bfa", "#f97316", "#ff4560", "#fbbf24", "#00e5b0", "#ec4899", "#84cc16", "#64748b"]
- 
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
- 
- 
+
+
 # --- ANALYTICS ---
- 
+
 def _smoothness(prices):
     if len(prices) < 3: return 0.0
     net = abs(prices[-1] - prices[0])
     total = sum(abs(prices[i] - prices[i-1]) for i in range(1, len(prices)))
     return round((net / total) * 100, 2) if total else 100.0
- 
+
 def _angle(prices):
     n = len(prices)
     if n < 2: return 0.0
@@ -88,10 +49,10 @@ def _angle(prices):
     num = sum((i-xm)*(prices[i]-ym) for i in range(n))
     den = sum((i-xm)**2 for i in range(n))
     return round(math.degrees(math.atan(num/den)), 2) if den else 0.0
- 
+
 def _trend(a):
     return "UP" if a > 5 else ("DOWN" if a < -5 else "FLAT")
- 
+
 def compute_rankings(straddle_data):
     rows = []
     for strike, df in straddle_data.items():
@@ -103,13 +64,13 @@ def compute_rankings(straddle_data):
     ranked = sorted(rows, key=lambda x: x["smoothness"], reverse=True)
     for i, r in enumerate(ranked): r["rank"] = i + 1
     return ranked
- 
- 
+
+
 # --- DASHBOARD BUILDER ---
- 
+
 def build_dashboard_html(straddle_data, atm, rankings):
     strikes = sorted(straddle_data.keys())
- 
+
     # --- Build main straddle charts ---
     fig_main = make_subplots(
         rows=len(strikes), cols=1,
@@ -127,7 +88,7 @@ def build_dashboard_html(straddle_data, atm, rankings):
                                       line=dict(color=MUTED, width=1, dash="dot")), row=row, col=1)
     fig_main.update_layout(height=2000, template="plotly_dark",
                            paper_bgcolor=BG, plot_bgcolor=BG, showlegend=False)
- 
+
     # --- Ranking chart ---
     fig_rank = go.Figure(go.Bar(
         y=[str(r["strike"]) for r in rankings],
@@ -143,7 +104,7 @@ def build_dashboard_html(straddle_data, atm, rankings):
         height=400, margin=dict(l=10, r=40, t=40, b=10),
         yaxis=dict(autorange="reversed"), xaxis=dict(range=[0, 110])
     )
- 
+
     # --- Ranking table ---
     table_rows_html = "".join([
         f"""<tr style="border-bottom:1px solid {BORDER};">
@@ -154,7 +115,7 @@ def build_dashboard_html(straddle_data, atm, rankings):
             <td style="padding:10px;">{r['trend']}</td>
         </tr>""" for r in rankings
     ])
- 
+
     # --- Build speed data for JS (includes full price series for dynamic smoothness) ---
     speed_data = {}
     for strike, df in straddle_data.items():
@@ -162,19 +123,19 @@ def build_dashboard_html(straddle_data, atm, rankings):
             {"time": row["time"].strftime("%H:%M"), "price": round(row["straddle"], 2)}
             for _, row in df.iterrows()
         ]
- 
+
     # All unique time labels (from ATM strike or first available)
     ref_strike = str(atm) if str(atm) in speed_data else list(speed_data.keys())[0]
     all_times = [d["time"] for d in speed_data[ref_strike]]
- 
+
     main_chart_html = fig_main.to_html(full_html=False, include_plotlyjs='cdn')
     rank_chart_html = fig_rank.to_html(full_html=False, include_plotlyjs=False)
- 
+
     speed_data_json = json.dumps(speed_data)
     all_times_json = json.dumps(all_times)
     strikes_json = json.dumps([str(s) for s in strikes])
     strike_colors_json = json.dumps(STRIKE_COLORS)
- 
+
     
     final_html = f"""<!DOCTYPE html>
     <html>
@@ -377,21 +338,21 @@ def build_dashboard_html(straddle_data, atm, rankings):
         </script>
     </body>
     </html>"""
- 
+
     ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
     ist_time_str = ist_now.strftime("%H%M%S")
     filename = f"{TARGET_DATE}_{ist_time_str}.html"
     filepath = os.path.join(OUTPUT_DIR, filename)
- 
+
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(final_html)
- 
+
     logger.info(f"Dashboard saved as: {filepath}")
     return filepath
- 
- 
+
+
 # --- DATA FETCHING ---
- 
+
 def fetch_candles(fyers, symbol, date):
     data = {
         "symbol": symbol, "resolution": "1", "date_format": "1",
@@ -405,30 +366,30 @@ def fetch_candles(fyers, symbol, date):
                       .dt.tz_convert("Asia/Kolkata").dt.tz_localize(None))
         return df
     return pd.DataFrame()
- 
- 
+
+
 # --- MAIN ---
- 
+
 def main():
     if not CLIENT_ID:
         logger.error("CLIENT_ID not set. Aborting."); return
     if not TOKEN:
         logger.error("FYERS_ACCESS_TOKEN not set. Aborting."); return
- 
+
     logger.info(f"CLIENT_ID  : {CLIENT_ID}")
     logger.info(f"TOKEN      : {TOKEN[:10]}...{TOKEN[-5:]}")
     logger.info(f"TARGET_DATE: {TARGET_DATE}")
     logger.info(f"EXPIRY     : {EXPIRY}")
- 
+
     fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=TOKEN, log_path="")
     profile = fyers.get_profile()
     logger.info(f"Profile check: {profile.get('s')} | {profile.get('message', '-')}")
     if profile.get("s") != "ok":
         logger.error("Fyers auth failed. Token may be expired."); return
- 
+
     atm = 23900
     results = {}
- 
+
     for offset in OFFSETS:
         strike = atm + offset
         logger.info(f"Fetching strike {strike}...")
@@ -443,14 +404,13 @@ def main():
             logger.info(f"  Strike {strike}: {len(merged)} rows OK")
         else:
             logger.warning(f"  Strike {strike}: No data (CE={ce_df.empty}, PE={pe_df.empty})")
- 
+
     if results:
         rankings = compute_rankings(results)
         filepath = build_dashboard_html(results, atm, rankings)
         logger.info(f"Dashboard created: {filepath}")
     else:
         logger.error("No data retrieved. Check TOKEN, EXPIRY, TARGET_DATE.")
- 
+
 if __name__ == "__main__":
     main()
- 
