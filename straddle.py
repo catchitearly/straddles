@@ -387,7 +387,7 @@ def main():
     if profile.get("s") != "ok":
         logger.error("Fyers auth failed. Token may be expired."); return
 
-    atm = 24100
+    atm = 24150
     results = {}
 
     for offset in OFFSETS:
