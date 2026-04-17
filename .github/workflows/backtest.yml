@@ -8,16 +8,16 @@ jobs:
       CLIENT_ID: ${{ secrets.CLIENT_ID }}
       FYERS_ACCESS_TOKEN: ${{ secrets.FYERS_ACCESS_TOKEN }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4  # Updated to v4
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # Updated to v5
         with: { python-version: '3.10' }
       - name: Install dependencies
         run: pip install pandas fyers-apiv3 pytz
       - name: Run Backtester
         run: python backtest.py
       - name: Upload Report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4 # FIXED: Updated from v3 to v4
         with:
           name: backtest-report
           path: backtest_report.html
