@@ -1,0 +1,23 @@
+name: Straddle Backtest
+on: [push, workflow_dispatch]
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    env:
+      CLIENT_ID: ${{ secrets.CLIENT_ID }}
+      FYERS_ACCESS_TOKEN: ${{ secrets.FYERS_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with: { python-version: '3.10' }
+      - name: Install dependencies
+        run: pip install pandas fyers-apiv3 pytz
+      - name: Run Backtester
+        run: python backtest.py
+      - name: Upload Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: backtest-report
+          path: backtest_report.html
