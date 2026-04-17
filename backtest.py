@@ -128,9 +128,14 @@ results = simulate_backtest(DATES_TO_TEST)
 res_df = pd.DataFrame(results)
 
 def color_pnl(val):
-    return f'color: {"#00e5b0" if val > 0 else "#ff4560"}; font-weight: bold'
+    color = "#00e5b0" if val > 0 else "#ff4560"
+    return f'color: {color}; font-weight: bold'
 
-html_table = res_df.style.applymap(color_pnl, subset=['P&L']).to_html(index=False) if not res_df.empty else "No trades found."
+if not res_df.empty:
+    # Use .map instead of .applymap for better compatibility with newer Pandas
+    html_table = res_df.style.map(color_pnl, subset=['P&L']).to_html(index=False)
+else:
+    html_table = "No trades found."
 
 html_content = f"""
 <!DOCTYPE html>
