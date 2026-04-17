@@ -54,24 +54,30 @@ def simulate_backtest(dates):
         base_atm = int(round(price_b / 50) * 50) if abs(open_p - price_b) > 200 else int(round(open_p / 50) * 50)
         
         # Pre-fetch 5-min for Entry signals and 1-min for TSL management
+        # Pre-fetch 5-min for Entry signals and 1-min for TSL management
         data_5m = {}
         data_1m = {}
         for offset in OFFSETS:
             strike = base_atm + offset
+            # Fetching all 4 required datasets
             ce5 = get_history(f"NSE:NIFTY{EXPIRY}{strike}CE", date, "5")
             pe5 = get_history(f"NSE:NIFTY{EXPIRY}{strike}PE", date, "5")
             ce1 = get_history(f"NSE:NIFTY{EXPIRY}{strike}CE", date, "1")
             pe1 = get_history(f"NSE:NIFTY{EXPIRY}{strike}PE", date, "1")
 
-            if not ce5.empty and not pe5.empty:
+            # CRITICAL CHECK: Only proceed if all data exists and is not empty
+            if not (ce5.empty or pe5.empty or ce1.empty or pe1.empty):
+                # Process 5m
                 m5 = pd.merge(ce5[['time','c']], pe5[['time','c']], on='time')
                 m5['straddle'] = m5['c_x'] + m5['c_y']
                 data_5m[strike] = m5
-            
-            if not ce1.empty and not pe1.empty:
+                
+                # Process 1m
                 m1 = pd.merge(ce1[['time','c']], pe1[['time','c']], on='time')
                 m1['straddle'] = m1['c_x'] + m1['c_y']
                 data_1m[strike] = m1
+            else:
+                print(f"Skipping strike {strike} due to missing data at one or more resolutions.")
 
         active_trades = {}
         if not data_5m: continue
