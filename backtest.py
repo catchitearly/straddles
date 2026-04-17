@@ -8,9 +8,9 @@ from fyers_apiv3 import fyersModel
 # --- CONFIGURATION ---
 CLIENT_ID = os.getenv("CLIENT_ID")
 TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
-# Add your list of dates here for backtesting
-DATES_TO_TEST = ["2026-04-10", "2026-04-13", "2026-04-15", "2026-04-16", "2026-04-17"]
+DATES_TO_TEST = ["2026-04-10", "2026-04-13", "2026-04-09", "2026-04-15", "2026-04-16", "2026-04-17"]
 EXPIRY = "26421" 
+OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 IST = ZoneInfo("Asia/Kolkata")
 
 fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=TOKEN, log_path="")
@@ -27,96 +27,130 @@ def get_history(symbol, date, res="5"):
 
 def calc_metrics(prices, idx, window):
     if idx < window: return None
-    slice = prices[idx-window+1 : idx+1]
-    net = abs(slice[-1] - slice[0])
-    total = sum(abs(slice[i] - slice[i-1]) for i in range(1, len(slice)))
+    slice_data = prices[idx-window+1 : idx+1]
+    net = abs(slice_data[-1] - slice_data[0])
+    total = sum(abs(slice_data[i] - slice_data[i-1]) for i in range(1, len(slice_data)))
     smooth = (net / total * 100) if total > 0 else 0
-    speed = (slice[-1] - slice[0]) / (window * 5)
+    speed = (slice_data[-1] - slice_data[0]) / (window * 5)
     
-    x = list(range(len(slice)))
-    xm, ym = sum(x)/len(x), sum(slice)/len(slice)
-    num = sum((x[i]-xm)*(slice[i]-ym) for i in range(len(x)))
+    x = list(range(len(slice_data)))
+    xm, ym = sum(x)/len(x), sum(slice_data)/len(slice_data)
+    num = sum((x[i]-xm)*(slice_data[i]-ym) for i in range(len(x)))
     den = sum((x[i]-xm)**2 for i in range(len(x)))
     angle = math.degrees(math.atan(num/den)) if den != 0 else 0
     trend = "UP" if angle > 5 else ("DOWN" if angle < -5 else "FLAT")
     return {"smooth": smooth, "speed": speed, "trend": trend}
 
-def simulate_day(date):
-    # 1. Fetch Nifty Spot for ATM Logic
-    nifty_df = get_history("NSE:NIFTY50-INDEX", date, "1")
-    if nifty_df.empty: return {"date": date, "status": "No Spot Data"}
-    
-    open_p = nifty_df.iloc[0]['o']
-    try:
-        eleven_am = nifty_df[nifty_df['time'].dt.hour < 11].iloc[-1]['c']
-    except: return {"date": date, "status": "Market closed before 11"}
-    
-    atm = int(round(eleven_am / 50) * 50) if abs(open_p - eleven_am) > 200 else int(round(open_p / 50) * 50)
-    
-    # 2. Fetch Straddle Data
-    ce = get_history(f"NSE:NIFTY{EXPIRY}{atm}CE", date)
-    pe = get_history(f"NSE:NIFTY{EXPIRY}{atm}PE", date)
-    if ce.empty or pe.empty: return {"date": date, "status": "No Option Data"}
-    
-    df = pd.merge(ce[['time','c']], pe[['time','c']], on='time')
-    df['straddle'] = df['c_x'] + df['c_y']
-    prices = df['straddle'].tolist()
-    
-    # 3. Trade Simulation
-    in_trade = False
-    entry_p, tsl = 0, 0
-    entry_time = ""
-    
-    for i in range(len(df)):
-        curr_t = df.iloc[i]['time']
-        if curr_t.hour < 11 or (curr_t.hour == 11 and curr_t.minute < 5): continue
+def simulate_backtest(dates):
+    all_trades = []
+
+    for date in dates:
+        # 1. Fetch Nifty Spot for ATM Base
+        nifty_df = get_history("NSE:NIFTY50-INDEX", date, "1")
+        if nifty_df.empty: continue
+        open_p = nifty_df.iloc[0]['o']
+        try:
+            price_b = nifty_df[nifty_df['time'].dt.hour < 11].iloc[-1]['c']
+        except: continue
         
-        curr_p = prices[i]
-        m30 = calc_metrics(prices, i, 6)
-        m60 = calc_metrics(prices, i, 12)
-        if not m30 or not m60: continue
+        base_atm = int(round(price_b / 50) * 50) if abs(open_p - price_b) > 200 else int(round(open_p / 50) * 50)
+        
+        # 2. Pre-fetch all Straddle Data for the offsets
+        strike_data = {}
+        for offset in OFFSETS:
+            strike = base_atm + offset
+            ce = get_history(f"NSE:NIFTY{EXPIRY}{strike}CE", date)
+            pe = get_history(f"NSE:NIFTY{EXPIRY}{strike}PE", date)
+            if not ce.empty and not pe.empty:
+                merged = pd.merge(ce[['time','c']], pe[['time','c']], on='time')
+                merged['straddle'] = merged['c_x'] + merged['c_y']
+                strike_data[strike] = merged
 
-        if not in_trade:
-            # Entry Criteria
-            if m30['smooth'] > 70 and m30['speed'] < -0.9 and m30['trend'] == "DOWN" and m60['trend'] == "DOWN":
-                in_trade, entry_p, entry_time = True, curr_p, curr_t.strftime("%H:%M")
-                tsl = entry_p + 10
-        else:
-            # Trailing & Exit
-            profit = entry_p - curr_p
-            if profit >= 20: tsl = min(tsl, entry_p - 12)
-            elif profit >= 15: tsl = min(tsl, entry_p - 8)
-            elif profit >= 10: tsl = min(tsl, entry_p - 5)
-            elif profit >= 8: tsl = min(tsl, entry_p - 3)
-            
-            if curr_p >= tsl or curr_p >= entry_p + 10 or m30['speed'] > -0.10 or m30['trend'] == "UP" or m60['trend'] == "UP":
-                return {"date": date, "atm": atm, "entry": entry_p, "exit": curr_p, 
-                        "time": entry_time, "pnl": round(entry_p - curr_p, 2), "status": "Success"}
+        # 3. Parallel Simulation
+        # active_trades format: { strike_price: {trade_details} }
+        active_trades = {}
+        
+        # Use a reference timeline (from any strike data)
+        if not strike_data: continue
+        timeline = list(strike_data.values())[0]
+
+        for i in range(len(timeline)):
+            curr_t = timeline.iloc[i]['time']
+            if curr_t.hour < 11 or (curr_t.hour == 11 and curr_t.minute < 5): continue
+
+            for strike, df in strike_data.items():
+                if i >= len(df): continue
+                curr_p = df.iloc[i]['straddle']
                 
-    return {"date": date, "atm": atm, "status": "No Trade"}
+                # If we have a live trade for this strike, manage it
+                if strike in active_trades:
+                    trade = active_trades[strike]
+                    profit = trade["Entry Price"] - curr_p
+                    
+                    # Trailing logic
+                    if profit >= 20: trade["TSL"] = min(trade["TSL"], trade["Entry Price"] - 12)
+                    elif profit >= 15: trade["TSL"] = min(trade["TSL"], trade["Entry Price"] - 8)
+                    elif profit >= 10: trade["TSL"] = min(trade["TSL"], trade["Entry Price"] - 5)
+                    elif profit >= 8: trade["TSL"] = min(trade["TSL"], trade["Entry Price"] - 3)
+                    
+                    # Exit check
+                    m30 = calc_metrics(df['straddle'].tolist(), i, 6)
+                    m60 = calc_metrics(df['straddle'].tolist(), i, 12)
+                    
+                    exit_reason = None
+                    if curr_p >= trade["TSL"]: exit_reason = "TSL Hit"
+                    elif curr_p >= trade["Entry Price"] + 10: exit_reason = "Initial SL Hit"
+                    elif m30 and m30['speed'] > -0.10: exit_reason = "Speed Slowdown"
+                    elif m30 and m60 and (m30['trend'] == "UP" or m60['trend'] == "UP"): exit_reason = "Trend Reversal"
+                    
+                    if exit_reason:
+                        trade.update({
+                            "Exit Time": curr_t.strftime("%H:%M"), "Exit Price": round(curr_p, 2),
+                            "P&L": round(trade["Entry Price"] - curr_p, 2), "Reason": exit_reason
+                        })
+                        all_trades.append(trade)
+                        del active_trades[strike]
 
-# --- EXECUTION & HTML GENERATION ---
-results = [simulate_day(d) for d in DATES_TO_TEST]
+                # Else, check for Entry
+                else:
+                    m30 = calc_metrics(df['straddle'].tolist(), i, 6)
+                    m60 = calc_metrics(df['straddle'].tolist(), i, 12)
+                    if m30 and m60:
+                        if m30['smooth'] > 70 and m30['speed'] < -0.9 and m30['trend'] == "DOWN" and m60['trend'] == "DOWN":
+                            active_trades[strike] = {
+                                "Date": date, "Strike": strike, "Entry Time": curr_t.strftime("%H:%M"),
+                                "Entry Price": round(curr_p, 2), "TSL": round(curr_p + 10, 2)
+                            }
+    return all_trades
+
+# --- HTML REPORT GENERATION ---
+results = simulate_backtest(DATES_TO_TEST)
 res_df = pd.DataFrame(results)
 
-html_template = f"""
+def color_pnl(val):
+    return f'color: {"#00e5b0" if val > 0 else "#ff4560"}; font-weight: bold'
+
+html_table = res_df.style.applymap(color_pnl, subset=['P&L']).to_html(index=False) if not res_df.empty else "No trades found."
+
+html_content = f"""
+<!DOCTYPE html>
 <html>
-<head><style>
-    body {{ font-family: sans-serif; background: #1a1a1a; color: white; padding: 40px; }}
-    table {{ width: 100%; border-collapse: collapse; background: #2d2d2d; }}
-    th, td {{ padding: 12px; border: 1px solid #444; text-align: left; }}
-    th {{ background: #00e5b0; color: black; }}
-    .profit {{ color: #00e5b0; font-weight: bold; }}
-    .loss {{ color: #ff4560; font-weight: bold; }}
-</style></head>
+<head>
+    <style>
+        body {{ background: #0b0f1a; color: #e2e8f0; font-family: sans-serif; padding: 20px; }}
+        h2 {{ color: #00e5b0; border-bottom: 1px solid #1e2d40; padding-bottom: 10px; }}
+        .dataframe {{ width: 100%; border-collapse: collapse; margin-top: 20px; background: #111b27; }}
+        th {{ background: #1e2d40; color: #64748b; padding: 12px; text-align: left; font-size: 11px; text-transform: uppercase; }}
+        td {{ padding: 12px; border: 1px solid #1e2d40; }}
+        tr:hover {{ background: #1a2635; }}
+    </style>
+</head>
 <body>
-    <h2>Straddle Backtest Summary (Expiry: {EXPIRY})</h2>
-    {res_df.to_html(index=False, classes='table').replace('style="text-align: right;"', '')}
+    <h2>Parallel Straddle Backtest Results</h2>
+    {html_table}
 </body>
 </html>
 """
 
 with open("backtest_report.html", "w") as f:
-    f.write(html_template.replace('<td>-', '<td class="loss">-').replace('<td>+', '<td class="profit">+'))
-
-print("Backtest complete. Report saved to backtest_report.html")
+    f.write(html_content)
