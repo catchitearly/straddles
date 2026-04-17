@@ -13,7 +13,7 @@ jobs:
         uses: actions/setup-python@v5 # Updated to v5
         with: { python-version: '3.10' }
       - name: Install dependencies
-        run: pip install pandas fyers-apiv3 pytz
+        run: pip install pandas fyers-apiv3 pytz jinja2
       - name: Run Backtester
         run: python backtest.py
       - name: Upload Report
