@@ -1,23 +1,42 @@
-name: Straddle Backtest
-on: [push, workflow_dispatch]
+name: Straddle Backtest Simulator
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   backtest:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to push the cache back
     env:
       CLIENT_ID: ${{ secrets.CLIENT_ID }}
       FYERS_ACCESS_TOKEN: ${{ secrets.FYERS_ACCESS_TOKEN }}
     steps:
-      - uses: actions/checkout@v4  # Updated to v4
+      - uses: actions/checkout@v4
+
       - name: Set up Python
-        uses: actions/setup-python@v5 # Updated to v5
-        with: { python-version: '3.10' }
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
       - name: Install dependencies
         run: pip install pandas fyers-apiv3 pytz jinja2
-      - name: Run Backtester
+
+      - name: Run Backtester & Generator
         run: python backtest.py
-      - name: Upload Report
-        uses: actions/upload-artifact@v4 # FIXED: Updated from v3 to v4
+
+      - name: Commit Data Cache
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          mkdir -p data_cache
+          git add data_cache/*.csv
+          git commit -m "Update historical data cache [skip ci]" || echo "No changes to commit"
+          git push
+
+      - name: Upload Interactive Dashboard
+        uses: actions/upload-artifact@v4
         with:
-          name: backtest-report
-          path: backtest_report.html
+          name: simulator-dashboard
+          path: simulator.html
