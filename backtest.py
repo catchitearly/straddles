@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -8,7 +9,7 @@ from fyers_apiv3 import fyersModel
 # --- CONFIGURATION ---
 CLIENT_ID = os.getenv("CLIENT_ID")
 TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
-DATES_TO_TEST = ["2026-04-06","2026-04-07","2026-04-08","2026-04-09","2026-04-10", "2026-04-13", "2026-04-15", "2026-04-16", "2026-04-17"]
+DATES_TO_TEST = ["2026-04-08","2026-04-09","2026-04-10", "2026-04-13", "2026-04-15", "2026-04-16", "2026-04-17"]
 EXPIRY = "26421"
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 IST = ZoneInfo("Asia/Kolkata")
@@ -19,18 +20,17 @@ os.makedirs(DATA_DIR, exist_ok=True)
 fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=TOKEN, log_path="")
 
 def get_history(symbol, date, res):
-    # Local Cache Path
     clean_sym = symbol.replace(":", "_")
     filename = f"{clean_sym}_{res}_{date}.csv"
     filepath = os.path.join(DATA_DIR, filename)
 
-    # 1. Check Local Cache
     if os.path.exists(filepath):
         df = pd.read_csv(filepath)
         df["time"] = pd.to_datetime(df["time"])
         return df
 
-    # 2. Fetch from API if not found
+    # Respect rate limits
+    time.sleep(0.5) 
     print(f"Fetching {symbol} ({res}) for {date} from API...")
     data = {"symbol": symbol, "resolution": res, "date_format": "1", 
             "range_from": date, "range_to": date, "cont_flag": "1"}
@@ -39,7 +39,6 @@ def get_history(symbol, date, res):
     if resp.get("s") == "ok":
         df = pd.DataFrame(resp["candles"], columns=["epoch","o","h","l","c","v"])
         df["time"] = pd.to_datetime(df["epoch"], unit="s").dt.tz_localize("UTC").dt.tz_convert(IST).dt.tz_localize(None)
-        # Save to CSV
         df.to_csv(filepath, index=False)
         return df
     return pd.DataFrame()
@@ -48,92 +47,78 @@ def prepare_simulator_data():
     master_data = {}
 
     for date in DATES_TO_TEST:
-        day_key = date
-        master_data[day_key] = {"strikes": {}, "spot": []}
+        master_data[date] = {"strikes": {}, "spot": []}
         
-        # Get Spot for ATM calculation
         nifty = get_history("NSE:NIFTY50-INDEX", date, "1")
         if nifty.empty: continue
         
-        # Convert spot to simple list for JS
-        master_data[day_key]["spot"] = nifty[['time', 'o', 'c']].to_dict('records')
+        # Format spot timestamps for JSON
+        spot_copy = nifty[['time', 'o', 'c']].copy()
+        spot_copy['time'] = spot_copy['time'].dt.strftime("%Y-%m-%d %H:%M:%S")
+        master_data[date]["spot"] = spot_copy.to_dict('records')
         
-        # ATM Logic (Python side prepares the base, JS uses it)
         open_p = nifty.iloc[0]['o']
         price_b = nifty[nifty['time'].dt.hour < 11].iloc[-1]['c']
         base_atm = int(round(price_b / 50) * 50) if abs(open_p - price_b) > 200 else int(round(open_p / 50) * 50)
 
         for offset in OFFSETS:
             strike = base_atm + offset
-            df5 = get_history(f"NSE:NIFTY{EXPIRY}{strike}CE", date, "5")
-            pe5 = get_history(f"NSE:NIFTY{EXPIRY}{strike}PE", date, "5")
-            df1 = get_history(f"NSE:NIFTY{EXPIRY}{strike}CE", date, "1")
-            pe1 = get_history(f"NSE:NIFTY{EXPIRY}{strike}PE", date, "1")
+            df5_ce = get_history(f"NSE:NIFTY{EXPIRY}{strike}CE", date, "5")
+            df5_pe = get_history(f"NSE:NIFTY{EXPIRY}{strike}PE", date, "5")
+            df1_ce = get_history(f"NSE:NIFTY{EXPIRY}{strike}CE", date, "1")
+            df1_pe = get_history(f"NSE:NIFTY{EXPIRY}{strike}PE", date, "1")
 
-            if not (df5.empty or pe5.empty or df1.empty or pe1.empty):
-                m5 = pd.merge(df5[['time','c']], pe5[['time','c']], on='time')
-                m1 = pd.merge(df1[['time','c']], pe1[['time','c']], on='time')
+            if not (df5_ce.empty or df5_pe.empty or df1_ce.empty or df1_pe.empty):
+                m5 = pd.merge(df5_ce[['time','c']], df5_pe[['time','c']], on='time')
+                m1 = pd.merge(df1_ce[['time','c']], df1_pe[['time','c']], on='time')
                 
-                master_data[day_key]["strikes"][str(strike)] = {
+                master_data[date]["strikes"][str(strike)] = {
                     "data5m": (m5['c_x'] + m5['c_y']).tolist(),
                     "times5m": m5['time'].dt.strftime("%H:%M").tolist(),
                     "data1m": (m1['c_x'] + m1['c_y']).tolist(),
                     "times1m": m1['time'].dt.strftime("%H:%M").tolist()
                 }
-    
     return master_data
 
-# --- HTML GENERATOR ---
-# This generates a dashboard where all logic is handled by JavaScript
 def generate_interactive_html(data):
     json_data = json.dumps(data)
     
     html_content = f"""
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
-        <title>Dynamic Straddle Simulator</title>
+        <meta charset="UTF-8">
+        <title>Straddle Simulator Pro</title>
         <style>
-            body {{ background: #0b1117; color: #c9d1d9; font-family: sans-serif; padding: 20px; }}
-            .panel {{ background: #161b22; padding: 20px; border-radius: 8px; border: 1px solid #30363d; margin-bottom: 20px; }}
-            .controls {{ display: flex; gap: 20px; flex-wrap: wrap; }}
-            .control-group {{ display: flex; flex-direction: column; }}
-            input {{ background: #0d1117; color: white; border: 1px solid #30363d; padding: 8px; border-radius: 4px; }}
-            table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
-            th {{ background: #21262d; padding: 10px; text-align: left; font-size: 12px; }}
-            td {{ padding: 10px; border-bottom: 1px solid #30363d; }}
+            body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; padding: 30px; line-height: 1.5; }}
+            .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 20px; margin-bottom: 20px; }}
+            .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }}
+            label {{ display: block; font-size: 12px; color: #8b949e; margin-bottom: 5px; }}
+            input {{ background: #0d1117; border: 1px solid #30363d; color: white; padding: 8px; border-radius: 6px; width: 100%; box-sizing: border-box; }}
+            button {{ background: #238636; color: white; border: none; padding: 12px 24px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: 0.2s; }}
+            button:hover {{ background: #2ea043; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 20px; border: 1px solid #30363d; }}
+            th {{ background: #161b22; color: #8b949e; text-align: left; padding: 12px; font-size: 12px; border-bottom: 1px solid #30363d; }}
+            td {{ padding: 12px; border-bottom: 1px solid #30363d; font-size: 14px; }}
             .profit {{ color: #3fb950; font-weight: bold; }}
             .loss {{ color: #f85149; font-weight: bold; }}
-            button {{ background: #238636; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; }}
+            .stat-box {{ font-size: 24px; font-weight: bold; margin-top: 10px; }}
         </style>
     </head>
     <body>
-        <h2>⚡ Interactive Backtest Simulator</h2>
+        <h2>📊 Straddle Strategy Simulator</h2>
         
-        <div class="panel">
-            <div class="controls">
-                <div class="control-group">
-                    <label>Min Smoothness (%)</label>
-                    <input type="number" id="minSmooth" value="70">
-                </div>
-                <div class="control-group">
-                    <label>Entry Speed (pts/min)</label>
-                    <input type="number" id="entrySpeed" value="-0.9" step="0.1">
-                </div>
-                <div class="control-group">
-                    <label>Exit Speed (pts/min)</label>
-                    <input type="number" id="exitSpeed" value="-0.1" step="0.1">
-                </div>
-                <div class="control-group">
-                    <label>SL Points</label>
-                    <input type="number" id="slPoints" value="10">
-                </div>
-                <div class="control-group" style="justify-content: flex-end;">
-                    <button onclick="runSimulation()">Run Simulator</button>
-                </div>
+        <div class="card">
+            <div class="grid">
+                <div><label>Min Smoothness (%)</label><input type="number" id="minSmooth" value="70"></div>
+                <div><label>Entry Speed (pts/min)</label><input type="number" id="entrySpeed" value="-0.9" step="0.1"></div>
+                <div><label>Exit Speed Threshold</label><input type="number" id="exitSpeed" value="-0.1" step="0.05"></div>
+                <div><label>Initial SL (pts)</label><input type="number" id="slPoints" value="10"></div>
             </div>
+            <div style="margin-top: 20px; text-align: right;"><button onclick="runSimulation()">Run Simulator</button></div>
         </div>
 
+        <div id="summaryArea"></div>
         <div id="resultsArea"></div>
 
         <script>
@@ -148,7 +133,7 @@ def generate_interactive_html(data):
                 const smooth = total > 0 ? (net / total * 100) : 0;
                 const speed = (slice[slice.length-1] - slice[0]) / (window * 5);
                 
-                // Simplified Trend (Slope)
+                // Simple Linear Slope
                 const x = Array.from({{length: slice.length}}, (_, i) => i);
                 const xm = x.reduce((a,b)=>a+b)/x.length;
                 const ym = slice.reduce((a,b)=>a+b)/slice.length;
@@ -158,71 +143,69 @@ def generate_interactive_html(data):
                     den += Math.pow(x[i]-xm, 2);
                 }}
                 const angle = Math.atan(num/den) * (180/Math.PI);
-                const trend = angle > 5 ? "UP" : (angle < -5 ? "DOWN" : "FLAT");
-                
-                return {{ smooth, speed, trend }};
+                return {{ smooth, speed, trend: angle > 5 ? "UP" : (angle < -5 ? "DOWN" : "FLAT") }};
             }}
 
             function runSimulation() {{
-                const config = {{
+                const cfg = {{
                     smooth: parseFloat(document.getElementById('minSmooth').value),
-                    entrySpeed: parseFloat(document.getElementById('entrySpeed').value),
-                    exitSpeed: parseFloat(document.getElementById('exitSpeed').value),
+                    eSpeed: parseFloat(document.getElementById('entrySpeed').value),
+                    xSpeed: parseFloat(document.getElementById('exitSpeed').value),
                     sl: parseFloat(document.getElementById('slPoints').value)
                 }};
 
-                let html = '<table><thead><tr><th>Date</th><th>Strike</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Reason</th></tr></thead><tbody>';
-                let totalPnL = 0;
+                let rows = '';
+                let totalPts = 0, winCount = 0, totalCount = 0;
 
                 for (let date in masterData) {{
                     const day = masterData[date];
                     for (let strike in day.strikes) {{
-                        const sData = day.strikes[strike];
-                        let activeTrade = null;
+                        const s = day.strikes[strike];
+                        let active = null;
 
-                        // Loop through 1-minute timeline
-                        for (let i = 0; i < sData.data1m.length; i++) {{
-                            const time = sData.times1m[i];
-                            const price = sData.data1m[i];
-                            
-                            // Get 5min index corresponding to this time
-                            const idx5m = sData.times5m.findIndex(t => t === time);
-                            const m30 = idx5m !== -1 ? calcMetrics(sData.data5m, idx5m, 6) : null;
-                            const m60 = idx5m !== -1 ? calcMetrics(sData.data5m, idx5m, 12) : null;
+                        for (let i = 0; i < s.data1m.length; i++) {{
+                            const time = s.times1m[i], price = s.data1m[i];
+                            const idx5m = s.times5m.findIndex(t => t === time);
+                            const m30 = idx5m !== -1 ? calcMetrics(s.data5m, idx5m, 6) : null;
+                            const m60 = idx5m !== -1 ? calcMetrics(s.data5m, idx5m, 12) : null;
 
-                            if (!activeTrade) {{
-                                // Entry logic
+                            if (!active) {{
                                 if (time >= "11:15" && time <= "13:30" && m30 && m60) {{
-                                    if (m30.smooth >= config.smooth && m30.speed <= config.entrySpeed && m30.trend === "DOWN" && m60.trend === "DOWN") {{
-                                        activeTrade = {{ entry: price, time: time, tsl: price + config.sl }};
+                                    if (m30.smooth >= cfg.smooth && m30.speed <= cfg.eSpeed && m30.trend === "DOWN" && m60.trend === "DOWN") {{
+                                        active = {{ entry: price, time: time, tsl: price + cfg.sl }};
                                     }}
                                 }}
                             }} else {{
-                                // Management logic (TSL)
-                                let profit = activeTrade.entry - price;
-                                if (profit >= 20) activeTrade.tsl = Math.min(activeTrade.tsl, activeTrade.entry - 12);
-                                else if (profit >= 15) activeTrade.tsl = Math.min(activeTrade.tsl, activeTrade.entry - 8);
-                                else if (profit >= 10) activeTrade.tsl = Math.min(activeTrade.tsl, activeTrade.entry - 5);
-                                else if (profit >= 8) activeTrade.tsl = Math.min(activeTrade.tsl, activeTrade.entry - 3);
+                                let pft = active.entry - price;
+                                if (pft >= 20) active.tsl = Math.min(active.tsl, active.entry - 12);
+                                else if (pft >= 15) active.tsl = Math.min(active.tsl, active.entry - 8);
+                                else if (pft >= 10) active.tsl = Math.min(active.tsl, active.entry - 5);
+                                else if (pft >= 8) active.tsl = Math.min(active.tsl, active.entry - 3);
 
-                                let exitReason = null;
-                                if (price >= activeTrade.tsl) exitReason = "TSL Hit";
-                                else if (m30 && m30.speed > config.exitSpeed) exitReason = "Speed Exit";
-                                else if (m30 && m60 && (m30.trend === "UP" || m60.trend === "UP")) exitReason = "Reversal";
+                                let reason = null;
+                                if (price >= active.tsl) reason = "TSL Hit";
+                                else if (m30 && m30.speed > cfg.xSpeed) reason = "Speed Slowdown";
+                                else if (m30 && m60 && (m30.trend === "UP" || m60.trend === "UP")) reason = "Trend UP";
 
-                                if (exitReason) {{
-                                    let pnl = activeTrade.entry - price;
-                                    totalPnL += pnl;
-                                    html += `<tr><td>${{date}}</td><td>${{strike}}</td><td>${{activeTrade.time}} (@${{activeTrade.entry.toFixed(2)}})</td><td>${{time}} (@${{price.toFixed(2)}})</td><td class="${{pnl >= 0 ? 'profit' : 'loss'}}">${{pnl.toFixed(2)}}</td><td>${{exitReason}}</td></tr>`;
-                                    activeTrade = null;
+                                if (reason) {{
+                                    let pnl = active.entry - price;
+                                    totalPts += pnl; totalCount++; if(pnl>0) winCount++;
+                                    rows += `<tr><td>${{date}}</td><td>${{strike}}</td><td>${{active.time}} (@${{active.entry.toFixed(2)}})</td><td>${{time}} (@${{price.toFixed(2)}})</td><td class="${{pnl >= 0 ? 'profit' : 'loss'}}">${{pnl.toFixed(2)}}</td><td>${{reason}}</td></tr>`;
+                                    active = null;
                                 }}
                             }}
                         }}
                     }}
                 }}
-                html += `</tbody></table><h3>Total Points: <span class="${{totalPnL >= 0 ? 'profit' : 'loss'}}">${{totalPnL.toFixed(2)}}</span></h3>`;
-                document.getElementById('resultsArea').innerHTML = html;
+                document.getElementById('summaryArea').innerHTML = `
+                    <div class="card grid">
+                        <div><label>Total P&L (Points)</label><div class="stat-box ${{totalPts>=0?'profit':'loss'}}">${{totalPts.toFixed(2)}}</div></div>
+                        <div><label>Win Rate</label><div class="stat-box">${{totalCount>0?((winCount/totalCount)*100).toFixed(1):0}}%</div></div>
+                        <div><label>Total Trades</label><div class="stat-box">${{totalCount}}</div></div>
+                    </div>`;
+                document.getElementById('resultsArea').innerHTML = `<table><thead><tr><th>Date</th><th>Strike</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Reason</th></tr></thead><tbody>${{rows}}</tbody></table>`;
             }}
+            window.onload = runSimulation;
         </script>
     </body>
     </html>
@@ -231,5 +214,8 @@ def generate_interactive_html(data):
         f.write(html_content)
 
 if __name__ == "__main__":
+    print("Preparing simulator data...")
     sim_data = prepare_simulator_data()
+    print("Generating interactive HTML...")
     generate_interactive_html(sim_data)
+    print("Done!")
