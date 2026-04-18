@@ -8,7 +8,7 @@ jobs:
   backtest:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Required to push the cache back
+      contents: write
     env:
       CLIENT_ID: ${{ secrets.CLIENT_ID }}
       FYERS_ACCESS_TOKEN: ${{ secrets.FYERS_ACCESS_TOKEN }}
@@ -21,22 +21,22 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install pandas fyers-apiv3 pytz jinja2
+        run: pip install pandas fyers-apiv3 pytz
 
-      - name: Run Backtester & Generator
+      - name: Run Backtester
         run: python backtest.py
 
-      - name: Commit Data Cache
+      - name: Commit Cache
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           mkdir -p data_cache
           git add data_cache/*.csv
-          git commit -m "Update historical data cache [skip ci]" || echo "No changes to commit"
+          git commit -m "Update cache [skip ci]" || echo "No changes"
           git push
 
-      - name: Upload Interactive Dashboard
+      - name: Upload HTML
         uses: actions/upload-artifact@v4
         with:
-          name: simulator-dashboard
+          name: simulator
           path: simulator.html
