@@ -6,7 +6,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from fyers_apiv3 import fyersModel
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION --
 CLIENT_ID = os.getenv("CLIENT_ID")
 TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 DATES_TO_TEST = ["2026-04-07","2026-04-08","2026-04-09","2026-04-10", "2026-04-13", "2026-04-14", "2026-04-15", "2026-04-16", "2026-04-17"]
