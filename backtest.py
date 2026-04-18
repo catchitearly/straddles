@@ -61,7 +61,7 @@ def prepare_simulator_data():
         
         open_p = nifty.iloc[0]['o']
         price_b = nifty[nifty['time'].dt.hour < 11].iloc[-1]['c']
-        base_atm = int(round(price_b / 50) * 50) if abs(open_p - price_b) > 200 else int(round(open_p / 50) * 50)
+        base_atm = int(round(price_b / 100) * 100) if abs(open_p - price_b) > 200 else int(round(open_p / 100) * 100)
 
         for offset in OFFSETS:
             strike = base_atm + offset
@@ -183,7 +183,12 @@ def generate_interactive_html(data):
                                 if (pft >= 20) active.tsl = Math.min(active.tsl, active.entryPrice - 12);
                                 else if (pft >= 15) active.tsl = Math.min(active.tsl, active.entryPrice - 8);
                                 else if (pft >= 10) active.tsl = Math.min(active.tsl, active.entryPrice - 5);
+                                else if (pft >= 5) active.tsl = Math.min(active.tsl, active.entryPrice - 2);
                                 else if (pft >= 8) active.tsl = Math.min(active.tsl, active.entryPrice - 3);
+                                else if (pft >= 20) active.tsl = Math.min(active.tsl, active.entryPrice - 10);
+                                else if (pft >= 30) active.tsl = Math.min(active.tsl, active.entryPrice - 20);
+                                else if (pft >= 40) active.tsl = Math.min(active.tsl, active.entryPrice - 30);
+                                else if (pft >= 50) active.tsl = Math.min(active.tsl, active.entryPrice - 40);
 
                                 let reason = null;
                                 if (price >= active.tsl) reason = "TSL Hit";
