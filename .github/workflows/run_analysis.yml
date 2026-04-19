@@ -1,3 +1,5 @@
+'''
+
 name: 30-Min Straddle Update
 
 on:
@@ -49,3 +51,4 @@ jobs:
           # The '|| exit 0' prevents failure if the HTML hasn't changed since the last run
           git commit -m "Update Straddle Report: $(date)" || exit 0
           git push
+'''
