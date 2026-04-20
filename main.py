@@ -23,9 +23,12 @@ fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=TOKEN, log_path="")
 
 # --- GRID DEFINITIONS ---
 SMOOTH_RANGE = list(range(40, 101, 5))
-ENTRY_SPEEDS = [round(-0.3 + i * (-0.05), 2) for i in range(15)]
-EXIT_SPEEDS  = [round(-0.2 + i * 0.05, 2) for i in range(9)]
-SL_RANGE     = list(range(10, 0, -1))
+# -0.3 to -2.5 in decrements of 0.05
+ENTRY_SPEEDS = [round(-0.3 - (i * 0.05), 2) for i in range(45)] 
+# -0.2 to 0.2 in increments of 0.05
+EXIT_SPEEDS  = [round(-0.2 + (i * 0.05), 2) for i in range(9)]
+# 10 to 5 in decrements of 1
+SL_RANGE     = list(range(10, 4, -1))
 
 class DateTimeEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -88,56 +91,53 @@ def prepare_data():
 def generate_html(data):
     json_data = json.dumps(data, cls=DateTimeEncoder)
     
-    # Use a raw triple-quoted string for the HTML/CSS/JS block
-    # This prevents Python from looking for f-string variables
     html_start = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Nifty Straddle Optimizer</title>
+    <title>Nifty Advanced Optimizer</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
     <style>
         :root { --bg: #080c10; --surface: #0e1420; --border: #1e2d3d; --accent: #00d4ff; --accent2: #ff6b35; --profit: #00ff88; --loss: #ff4444; --text: #c8d8e8; --muted: #5a7a9a; }
         body { background: var(--bg); color: var(--text); font-family: 'Space Grotesk', sans-serif; padding: 20px; }
         .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
         h1 { font-size: 24px; color: var(--accent); margin-bottom: 5px; }
-        .metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
-        .metric { background: var(--bg); border: 1px solid var(--border); padding: 15px; border-radius: 8px; }
+        .metric-card { background: var(--bg); border: 1px solid var(--border); padding: 15px; border-radius: 8px; flex: 1; min-width: 150px; }
         .metric-label { font-size: 10px; color: var(--muted); text-transform: uppercase; font-family: 'IBM Plex Mono'; }
-        .metric-val { font-size: 18px; font-weight: 700; margin-top: 5px; }
-        .profit { color: var(--profit); } .loss { color: var(--loss); }
-        table { width: 100%; border-collapse: collapse; font-family: 'IBM Plex Mono'; font-size: 12px; }
-        th { text-align: left; padding: 10px; border-bottom: 1px solid var(--border); color: var(--accent); }
+        .metric-val { font-size: 20px; font-weight: 700; margin-top: 5px; color: var(--accent); }
+        table { width: 100%; border-collapse: collapse; font-family: 'IBM Plex Mono'; font-size: 11px; }
+        th { text-align: left; padding: 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
         td { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05); }
-        .btn { background: var(--accent2); color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: 600; }
-        #progressBar { height: 4px; background: var(--border); width: 100%; border-radius: 2px; margin-top: 10px; overflow: hidden; }
-        #progressFill { height: 100%; background: var(--accent); width: 0%; transition: width 0.1s; }
+        .profit { color: var(--profit); } .loss { color: var(--loss); }
+        .btn { background: var(--accent2); color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-weight: 700; transition: transform 0.1s; }
+        .btn:active { transform: scale(0.98); }
+        #progressBar { height: 6px; background: var(--border); width: 100%; border-radius: 3px; margin-top: 15px; overflow: hidden; }
+        #progressFill { height: 100%; background: var(--accent); width: 0%; transition: width 0.2s; }
     </style>
 </head>
 <body>
-    <h1>Straddle Optimizer Engine</h1>
-    <p style="color:var(--muted); font-size: 12px; margin-bottom: 20px;">Logic: Adverse Slippage | Rs 200 Brokerage</p>
+    <h1>Straddle Optimizer Engine v2.0</h1>
+    <p style="color:var(--muted); font-size: 12px; margin-bottom: 20px;">
+        5 Lots @ 65 Qty | Slippage: Linear (0-1) | Brokerage: ₹200/Trade | Capital: ₹12.5L
+    </p>
     
     <div class="panel">
-        <div style="display: flex; gap: 15px; align-items: flex-end; flex-wrap: wrap;">
-            <div>
-                <label style="display:block; font-size: 10px; color: var(--muted);">CAPITAL (INR)</label>
-                <select id="capital" class="btn" style="background: var(--bg); border: 1px solid var(--border);">
-                    <option value="100000">1,00,000</option>
-                    <option value="500000">5,00,000</option>
-                </select>
+        <div style="display: flex; gap: 20px; align-items: center;">
+            <div class="metric-card">
+                <div class="metric-label">Total Capital</div>
+                <div class="metric-val">₹12,50,000</div>
             </div>
-            <button class="btn" onclick="runOptimizer()">▶ START OPTIMIZATION</button>
+            <button class="btn" onclick="runOptimizer()">▶ RUN 31,590 SIMULATIONS</button>
         </div>
         <div id="progressBar"><div id="progressFill"></div></div>
-        <p id="status" style="font-size: 11px; margin-top: 10px; color: var(--muted); font-family: 'IBM Plex Mono';"></p>
+        <p id="status" style="font-size: 11px; margin-top: 10px; color: var(--muted); font-family: 'IBM Plex Mono';">Waiting to start...</p>
     </div>
 
     <div class="panel">
         <table id="resultsTable">
             <thead>
                 <tr>
-                    <th>Smooth%</th><th>E.Speed</th><th>X.Speed</th><th>SL</th><th>Net P&L</th><th>Win%</th><th>MaxDD%</th><th>Score</th>
+                    <th>SMOOTH%</th><th>E.SPEED</th><th>X.SPEED</th><th>SL</th><th>NET P&L</th><th>ROI%</th><th>WIN%</th><th>MAX DD%</th><th>SCORE</th>
                 </tr>
             </thead>
             <tbody id="resultsBody"></tbody>
@@ -146,13 +146,14 @@ def generate_html(data):
 
     <script>
 """
-    # Inject the actual Python data here using simple concatenation
     script_data = f"""
         const masterData = {json_data};
         const SMOOTH_VALS = {SMOOTH_RANGE};
         const ESPEED_VALS = {ENTRY_SPEEDS};
         const XSPEED_VALS = {EXIT_SPEEDS};
         const SL_VALS = {SL_RANGE};
+        const TOTAL_QTY = 325; // 5 lots * 65 qty
+        const CAPITAL = 1250000; 
     """
 
     html_end = r"""
@@ -173,7 +174,7 @@ def generate_html(data):
             for (let date in masterData) {
                 for (let strike in masterData[date].strikes) {
                     const s = masterData[date].strikes[strike];
-                    const slip = Math.abs(s.offset) / 400;
+                    const slip = Math.abs(s.offset) / 400; // Slippage: 0 at ATM, 1 at 400 offset
                     let active = null;
 
                     for (let i=0; i < s.data1m.length; i++) {
@@ -198,7 +199,8 @@ def generate_html(data):
                             else if (time === "15:29") exitReason = "EOD";
 
                             if (exitReason) {
-                                const net = ((active.entry - (price + slip)) * 75) - 200;
+                                const gross = (active.entry - (price + slip)) * TOTAL_QTY;
+                                const net = gross - 200; // Brokerage deduction
                                 trades.push(net);
                                 active = null;
                             }
@@ -210,7 +212,6 @@ def generate_html(data):
         }
 
         async function runOptimizer() {
-            const capital = parseInt(document.getElementById('capital').value);
             const results = [];
             const total = SMOOTH_VALS.length * ESPEED_VALS.length * XSPEED_VALS.length * SL_VALS.length;
             let count = 0;
@@ -222,17 +223,19 @@ def generate_html(data):
                             const trades = simulate(smooth, es, xs, sl);
                             if (trades.length > 0) {
                                 const netPnl = trades.reduce((a,b) => a+b, 0);
-                                const wins = trades.filter(t => t > 0).length;
-                                const wr = (wins / trades.length) * 100;
+                                const wr = (trades.filter(t => t > 0).length / trades.length) * 100;
                                 let peak = 0, cur = 0, mdd = 0;
                                 trades.forEach(t => { cur += t; if(cur > peak) peak = cur; mdd = Math.max(mdd, peak - cur); });
-                                const score = (netPnl / capital) * 10 + (wr / 100);
-                                results.push({ smooth, es, xs, sl, netPnl, wr, mdd: (mdd/capital)*100, score });
+                                
+                                const roi = (netPnl / CAPITAL) * 100;
+                                const score = (roi * 2) + (wr / 10) - ((mdd/CAPITAL)*50);
+                                
+                                results.push({ smooth, es, xs, sl, netPnl, roi, wr, mdd: (mdd/CAPITAL)*100, score });
                             }
                             count++;
-                            if(count % 250 === 0) {
+                            if(count % 500 === 0) {
                                 document.getElementById('progressFill').style.width = (count/total*100) + "%";
-                                document.getElementById('status').innerText = "Iteration: " + count + " / " + total;
+                                document.getElementById('status').innerText = "Simulating: " + count + " / " + total;
                                 await new Promise(r => setTimeout(r, 0));
                             }
                         }
@@ -242,23 +245,27 @@ def generate_html(data):
 
             results.sort((a,b) => b.score - a.score);
             let rows = "";
-            results.slice(0, 50).forEach(r => {
-                rows += `<tr><td>${r.smooth}%</td><td>${r.es}</td><td>${r.xs}</td><td>${r.sl}</td><td class="${r.netPnl>=0?'profit':'loss'}">₹${r.netPnl.toFixed(0)}</td><td>${r.wr.toFixed(1)}%</td><td class="loss">${r.mdd.toFixed(2)}%</td><td>${r.score.toFixed(2)}</td></tr>`;
+            results.slice(0, 100).forEach(r => {
+                rows += `<tr>
+                    <td>${r.smooth}%</td><td>${r.es}</td><td>${r.xs}</td><td>${r.sl}</td>
+                    <td class="${r.netPnl>=0?'profit':'loss'}">₹${r.netPnl.toLocaleString('en-IN', {maximumFractionDigits:0})}</td>
+                    <td>${r.roi.toFixed(2)}%</td><td>${r.wr.toFixed(1)}%</td>
+                    <td class="loss">${r.mdd.toFixed(2)}%</td><td>${r.score.toFixed(2)}</td>
+                </tr>`;
             });
             document.getElementById('resultsBody').innerHTML = rows;
-            document.getElementById('status').innerText = "Optimization Finished.";
+            document.getElementById('status').innerText = "Finished. Top 100 configurations shown.";
         }
     </script>
 </body>
 </html>
 """
-    # Combine the blocks
     full_html = html_start + script_data + html_end
     with open("simulator_optimizer.html", "w") as f:
         f.write(full_html)
 
 if __name__ == "__main__":
-    print("Preparing Data...")
-    m_data = prepare_data()
-    generate_html(m_data)
-    print("Optimization Report Ready.")
+    print("--- NIFTY STRADDLE OPTIMIZER ---")
+    data = prepare_data()
+    generate_html(data)
+    print("Dashboard created: simulator_optimizer.html")
