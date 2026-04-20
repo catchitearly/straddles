@@ -88,6 +88,7 @@ def prepare_data():
 def generate_html(data):
     json_data = json.dumps(data, cls=DateTimeEncoder)
     
+    # Using {{ }} to escape literal curly braces for CSS and JS
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -114,12 +115,12 @@ def generate_html(data):
 </head>
 <body>
     <h1>Straddle Optimizer Engine</h1>
-    <p style="color:var(--muted); font-size: 12px; margin-bottom: 20px;">Logic: Adverse Slippage (0→1pt) | Rs 200 Brokerage | IST Market Hours</p>
+    <p style="color:var(--muted); font-size: 12px; margin-bottom: 20px;">Logic: Adverse Slippage (0→1pt) | Rs 200 Brokerage</p>
     
     <div class="panel">
         <div style="display: flex; gap: 15px; align-items: flex-end; flex-wrap: wrap;">
             <div>
-                <label style="display:block; font-size: 10px; color: var(--muted);">CAPITAL</label>
+                <label style="display:block; font-size: 10px; color: var(--muted);">CAPITAL (INR)</label>
                 <select id="capital" class="btn" style="background: var(--bg); border: 1px solid var(--border);">
                     <option value="100000">1,00,000</option>
                     <option value="200000">2,00,000</option>
@@ -142,7 +143,7 @@ def generate_html(data):
         <table id="resultsTable">
             <thead>
                 <tr>
-                    <th>Smooth%</th><th>E.Speed</th><th>X.Speed</th><th>SL</th><th>Net P&L</th><th>Win%</th><th>Sharpe</th><th>MaxDD%</th><th>Score</th>
+                    <th>Smooth%</th><th>E.Speed</th><th>X.Speed</th><th>SL</th><th>Net P&L</th><th>Win%</th><th>MaxDD%</th><th>Score</th>
                 </tr>
             </thead>
             <tbody id="resultsBody"></tbody>
@@ -225,7 +226,6 @@ def generate_html(data):
                                 const wins = trades.filter(t => t > 0).length;
                                 const wr = (wins / trades.length) * 100;
                                 
-                                // Calculate MaxDD
                                 let peak = 0, cur = 0, mdd = 0;
                                 trades.forEach(t => {{ cur += t; if(cur > peak) peak = cur; mdd = Math.max(mdd, peak - cur); }});
                                 
@@ -233,7 +233,7 @@ def generate_html(data):
                                 results.push({{ smooth, es, xs, sl, netPnl, wr, mdd: (mdd/capital)*100, score }});
                             }}
                             count++;
-                            if(count % 100 === 0) {{
+                            if(count % 200 === 0) {{
                                 document.getElementById('progressFill').style.width = (count/total*100) + "%";
                                 document.getElementById('status').innerText = "Processing: " + count + " / " + total;
                                 await new Promise(r => setTimeout(r, 0));
@@ -244,15 +244,12 @@ def generate_html(data):
             }
 
             results.sort((a,b) => b.score - a.score);
-            const best = results[0];
-            
-            // Display Top 50
             let html = "";
-            results.slice(0, 50).forEach(r => {{
-                html += `<tr><td>${{r.smooth}}%</td><td>${{r.es}}</td><td>${{r.xs}}</td><td>${{r.sl}}</td><td class="${{r.netPnl>=0?'profit':'loss'}}">₹${{r.netPnl.toFixed(0)}}</td><td>${{r.wr.toFixed(1)}}%</td><td>-</td><td class="loss">${{r.mdd.toFixed(2)}}%</td><td>${{r.score.toFixed(2)}}</td></tr>`;
+            results.slice(0, 100).forEach(r => {{
+                html += `<tr><td>${{r.smooth}}%</td><td>${{r.es}}</td><td>${{r.xs}}</td><td>${{r.sl}}</td><td class="${{r.netPnl>=0?'profit':'loss'}}">₹${{r.netPnl.toFixed(0)}}</td><td>${{r.wr.toFixed(1)}}%</td><td class="loss">${{r.mdd.toFixed(2)}}%</td><td>${{r.score.toFixed(2)}}</td></tr>`;
             }});
             document.getElementById('resultsBody').innerHTML = html;
-            document.getElementById('status').innerText = "Complete! Best Setup Found.";
+            document.getElementById('status').innerText = "Complete!";
         }}
     </script>
 </body>
@@ -262,8 +259,7 @@ def generate_html(data):
         f.write(html_content)
 
 if __name__ == "__main__":
-    print("Starting Data Preparation...")
-    master_data = prepare_data()
-    print("Generating Interactive Optimizer...")
-    generate_html(master_data)
-    print("Done! Open simulator_optimizer.html in your browser.")
+    print("Preparing Data...")
+    m_data = prepare_data()
+    generate_html(m_data)
+    print("Optimization Report Ready.")
