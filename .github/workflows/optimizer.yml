@@ -1,0 +1,42 @@
+name: Straddle Strategy Optimizer
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 11 * * 1-5' # 4:30 PM IST
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Cache Data
+        uses: actions/cache@v4
+        with:
+          path: data_cache
+          key: ${{ runner.os }}-fyers-cache-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-fyers-cache-
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Optimization Script
+        env:
+          CLIENT_ID: ${{ secrets.FYERS_CLIENT_ID }}
+          FYERS_ACCESS_TOKEN: ${{ secrets.FYERS_ACCESS_TOKEN }}
+        run: python main.py
+
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: optimization-report
+          path: simulator_optimizer.html
