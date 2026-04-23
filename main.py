@@ -11,6 +11,7 @@ from fyers_apiv3 import fyersModel
 CLIENT_ID = os.getenv("CLIENT_ID")
 TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 
+# Dynamic Expiry Mapping
 EXPIRY_MAP = {
     "2026-04-07": "26421",
     "2026-04-08": "26421",
@@ -24,7 +25,7 @@ EXPIRY_MAP = {
 }
 
 DATES_TO_TEST = list(EXPIRY_MAP.keys())
-OFFSETS = [-100, 0, 100] # Precision focus for 5L
+OFFSETS = [-300,-200,-100, 0, 100,200,300] 
 IST = ZoneInfo("Asia/Kolkata")
 DATA_DIR = "data_cache"
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -32,10 +33,10 @@ os.makedirs(DATA_DIR, exist_ok=True)
 fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=TOKEN, log_path="")
 
 # --- GRID DEFINITIONS ---
-SMOOTH_RANGE = [40, 50, 60, 70, 80]
+SMOOTH_RANGE = [40,50, 60, 70, 80]
 ENTRY_SPEEDS = [round(-0.4 - (i * 0.1), 2) for i in range(5)]
 EXIT_SPEEDS  = [-0.1, -0.15,0]
-SL_RANGE     = [8, 6, 4]
+SL_RANGE     = [10,8, 6,5]
 
 ENTRY_TIMES = []
 curr = datetime.strptime("10:15", "%H:%M")
@@ -44,7 +45,51 @@ while curr <= end:
     ENTRY_TIMES.append(curr.strftime("%H:%M"))
     curr += timedelta(minutes=15)
 
-# --- UTILS (prepare_data and get_history remain same as previous version) ---
+def get_history(symbol, date, res):
+    filepath = os.path.join(DATA_DIR, f"{symbol.replace(':', '_')}_{res}_{date}.csv")
+    if os.path.exists(filepath):
+        df = pd.read_csv(filepath)
+        df["time"] = pd.to_datetime(df["time"])
+        return df
+    time.sleep(0.7)
+    arg = {"symbol": symbol, "resolution": res, "date_format": "1", "range_from": date, "range_to": date, "cont_flag": "1"}
+    resp = fyers.history(data=arg)
+    if resp.get("s") == "ok":
+        df = pd.DataFrame(resp["candles"], columns=["epoch", "o", "h", "l", "c", "v"])
+        df["time"] = (pd.to_datetime(df["epoch"], unit="s").dt.tz_localize("UTC").dt.tz_convert(IST).dt.tz_localize(None))
+        df.to_csv(filepath, index=False)
+        return df
+    return pd.DataFrame()
+
+def prepare_data():
+    master = {}
+    for date in DATES_TO_TEST:
+        expiry = EXPIRY_MAP.get(date)
+        nifty = get_history("NSE:NIFTY50-INDEX", date, "1")
+        if nifty.empty or not expiry: continue
+        
+        morning = nifty[nifty['time'].dt.strftime("%H:%M") <= "10:15"]
+        price_b = morning.iloc[-1]['c'] if not morning.empty else nifty.iloc[0]['o']
+        base_atm = int(round(price_b / 50) * 50)
+        
+        master[date] = {"strikes": {}}
+        for off in OFFSETS:
+            strike = base_atm + off
+            ce_sym, pe_sym = f"NSE:NIFTY{expiry}{strike}CE", f"NSE:NIFTY{expiry}{strike}PE"
+            d5ce, d5pe = get_history(ce_sym, date, "5"), get_history(pe_sym, date, "5")
+            d1ce, d1pe = get_history(ce_sym, date, "1"), get_history(pe_sym, date, "1")
+            
+            if not (d5ce.empty or d5pe.empty or d1ce.empty or d1pe.empty):
+                m5 = pd.merge(d5ce[['time', 'c']], d5pe[['time', 'c']], on='time')
+                m1 = pd.merge(d1ce[['time', 'c']], d1pe[['time', 'c']], on='time')
+                master[date]["strikes"][str(strike)] = {
+                    "data5m": (m5['c_x'] + m5['c_y']).tolist(),
+                    "times5m": m5['time'].dt.strftime("%H:%M").tolist(),
+                    "data1m": (m1['c_x'] + m1['c_y']).tolist(),
+                    "times1m": m1['time'].dt.strftime("%H:%M").tolist(),
+                    "offset": off
+                }
+    return master
 
 def generate_html(data):
     json_data = json.dumps(data)
@@ -62,13 +107,10 @@ def generate_html(data):
         .tab.active { background: #2b3139; border-color: var(--accent); color: var(--accent); }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
-        
-        /* Scatter Plot Styles */
         .chart-area { height: 400px; border-left: 2px solid var(--border); border-bottom: 2px solid var(--border); margin: 40px 0; position: relative; display: flex; align-items: flex-end; }
-        .dot { position: absolute; width: 8px; height: 8px; background: var(--accent); border-radius: 50%; cursor: pointer; opacity: 0.6; transition: transform 0.2s; }
-        .dot:hover { transform: scale(2); opacity: 1; border: 2px solid #fff; }
+        .dot { position: absolute; width: 10px; height: 10px; background: var(--accent); border-radius: 50%; cursor: pointer; opacity: 0.6; transition: 0.2s; }
+        .dot:hover { transform: scale(1.8); opacity: 1; border: 2px solid #fff; z-index: 100; }
         .axis-label { position: absolute; color: var(--muted); font-size: 11px; }
-
         input[type=range] { width: 100%; margin: 20px 0; accent-color: var(--accent); }
         table { width: 100%; border-collapse: collapse; font-size: 11px; }
         th, td { text-align: left; padding: 10px; border-bottom: 1px solid var(--border); }
@@ -100,16 +142,11 @@ def generate_html(data):
         <div style="display:flex; justify-content:space-between;">
             <label>Filter by Max Drawdown: <span id="ddVal" style="color:var(--accent); font-weight:bold;">₹50,000</span></label>
         </div>
-        <input type="range" id="ddSlider" min="5000" max="100000" step="5000" value="50000" oninput="updateSurface()">
-        
-        <div class="chart-area" id="surfaceChart">
-            <div class="axis-label" style="bottom: -25px; left: 50%;">Total Number of Trades</div>
-            <div class="axis-label" style="left: -40px; top: 50%; transform: rotate(-90deg);">Return on Capital (%)</div>
-        </div>
-        
+        <input type="range" id="ddSlider" min="2000" max="100000" step="2000" value="50000" oninput="updateSurface()">
+        <div class="chart-area" id="surfaceChart"></div>
         <div id="surfaceDrill" style="margin-top:20px; display:none; border-top:1px solid var(--border); padding-top:10px;">
-            <h4 style="color:var(--accent)">Combination Details</h4>
-            <table id="drillTable"><thead><tr><th>TIME</th><th>SM%</th><th>SPD</th><th>SL</th><th>ROC%</th><th>TRADES</th></tr></thead><tbody id="drillBody"></tbody></table>
+            <h4 style="color:var(--accent)">Selected Combination</h4>
+            <table id="drillTable"><thead><tr><th>TIME</th><th>SM%</th><th>SPD</th><th>SL</th><th>ROC%</th><th>TRADES</th><th>WIN%</th></tr></thead><tbody id="drillBody"></tbody></table>
         </div>
     </div>
 
@@ -146,17 +183,18 @@ def generate_html(data):
                                         trades.push(...simulate(masterData[d].strikes[stk], t, sm, es, xs, sl));
                                     }
                                 }
-                                if (trades.length > 5) {
+                                if (trades.length > 3) {
                                     const totalTrades = trades.length;
                                     const grossPnl = trades.reduce((a,b)=>a+b, 0);
-                                    const friction = totalTrades * TAX_PER_TRADE;
-                                    const netPnl = grossPnl - friction;
+                                    const netPnl = grossPnl - (totalTrades * TAX_PER_TRADE);
                                     const wr = (trades.filter(x=>x>0).length / totalTrades)*100;
                                     let pk=0, cur=0, mdd=0;
                                     trades.forEach(x=>{ cur+=x; pk=Math.max(pk,cur); mdd=Math.max(mdd,pk-cur); });
                                     
-                                    const score = (netPnl / (mdd || 5000)) * (wr/100) * (1 - (friction/Math.abs(grossPnl)));
-                                    allResults.push({ t, sm, es, xs, sl, netPnl, wr, mdd, totalTrades, score, roc: (netPnl/CAPITAL)*100 });
+                                    if (wr >= 70 && netPnl > 0) {
+                                        const score = (netPnl / (mdd || 5000)) * (wr/100);
+                                        allResults.push({ t, sm, es, xs, sl, netPnl, wr, mdd, totalTrades, score, roc: (netPnl/CAPITAL)*100 });
+                                    }
                                 }
                             }
                         }
@@ -180,26 +218,23 @@ def generate_html(data):
                     let total = 0; for(let j=1;j<slice.length;j++) total += Math.abs(slice[j]-slice[j-1]);
                     return { sm: (Math.abs(net)/total)*100, sp: net/(w*5) };
                 })(s.data5m, idx5, 6) : null;
-
                 if (!active) {
                     if (time >= entryTime && time <= "14:45" && m30 && m30.sm >= smooth && m30.sp <= eSpeed) 
                         active = { ent: price - slip, tsl: (price - slip) + sl };
                 } else {
                     if (active.ent - price >= 15) active.tsl = Math.min(active.tsl, active.ent - 5);
                     if (price >= active.tsl || (m30 && m30.sp > xSpeed) || time === "15:25") {
-                        trds.push(((active.ent - (price + slip)) * QTY));
-                        active = null;
+                        trds.push((active.ent - (price + slip)) * QTY); active = null;
                     }
                 }
-            }
-            return trds;
+            } return trds;
         }
 
         function renderRanking() {
             allResults.sort((a,b) => b.score - a.score);
             document.getElementById('rankBody').innerHTML = allResults.slice(0, 30).map(r => `
                 <tr><td>${r.score.toFixed(2)}</td><td>${r.t}</td><td>${r.sm}</td><td>${r.es}</td><td>${r.sl}</td>
-                <td style="color:${r.netPnl>0?'var(--profit)':'var(--loss)'}">₹${Math.round(r.netPnl).toLocaleString()}</td>
+                <td style="color:var(--profit)">₹${Math.round(r.netPnl).toLocaleString()}</td>
                 <td>${r.totalTrades}</td><td>${r.wr.toFixed(1)}%</td><td>₹${Math.round(r.mdd).toLocaleString()}</td></tr>`).join('');
         }
 
@@ -208,19 +243,19 @@ def generate_html(data):
             document.getElementById('ddVal').innerText = '₹' + parseInt(maxDD).toLocaleString();
             const filtered = allResults.filter(r => r.mdd <= maxDD);
             const chart = document.getElementById('surfaceChart');
-            chart.innerHTML = '<div class="axis-label" style="bottom: -25px; left: 50%;">Total Number of Trades</div><div class="axis-label" style="left: -40px; top: 50%; transform: rotate(-90deg);">Return on Capital (%)</div>';
+            chart.innerHTML = '<div class="axis-label" style="bottom: -25px; left: 50%;">Trades</div><div class="axis-label" style="left: -40px; top: 50%; transform: rotate(-90deg);">ROC %</div>';
             
-            const maxTrades = Math.max(...allResults.map(r => r.totalTrades));
-            const maxROC = Math.max(...allResults.map(r => r.roc));
+            const maxT = Math.max(...allResults.map(r => r.totalTrades)) || 1;
+            const maxR = Math.max(...allResults.map(r => r.roc)) || 1;
 
             filtered.forEach(r => {
                 const dot = document.createElement('div');
                 dot.className = 'dot';
-                dot.style.left = (r.totalTrades / maxTrades * 95) + '%';
-                dot.style.bottom = (r.roc / maxROC * 95) + '%';
+                dot.style.left = (r.totalTrades / maxT * 90 + 5) + '%';
+                dot.style.bottom = (r.roc / maxR * 90 + 5) + '%';
                 dot.onclick = () => {
                     document.getElementById('surfaceDrill').style.display = 'block';
-                    document.getElementById('drillBody').innerHTML = `<tr><td>${r.t}</td><td>${r.sm}</td><td>${r.es}</td><td>${r.sl}</td><td>${r.roc.toFixed(2)}%</td><td>${r.totalTrades}</td></tr>`;
+                    document.getElementById('drillBody').innerHTML = `<tr><td>${r.t}</td><td>${r.sm}</td><td>${r.es}</td><td>${r.sl}</td><td>${r.roc.toFixed(2)}%</td><td>${r.totalTrades}</td><td>${r.wr.toFixed(1)}%</td></tr>`;
                 };
                 chart.appendChild(dot);
             });
@@ -233,4 +268,10 @@ def generate_html(data):
         f.write(html_template)
 
 if __name__ == "__main__":
-    generate_html(prepare_data())
+    print("--- PREPARING DATA ---")
+    data = prepare_data()
+    if data:
+        generate_html(data)
+        print("--- SUCCESS: DASHBOARD GENERATED ---")
+    else:
+        print("--- ERROR: NO DATA FOUND ---")
