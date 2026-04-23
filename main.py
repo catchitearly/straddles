@@ -11,7 +11,6 @@ from fyers_apiv3 import fyersModel
 CLIENT_ID = os.getenv("CLIENT_ID")
 TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 
-# Mapping Trading Dates to their respective Weekly Expiry
 EXPIRY_MAP = {
     "2026-04-07": "26421",
     "2026-04-08": "26421",
@@ -25,7 +24,7 @@ EXPIRY_MAP = {
 }
 
 DATES_TO_TEST = list(EXPIRY_MAP.keys())
-OFFSETS = [-200, -100, 0, 100, 200] # Narrowed for 5L capital efficiency
+OFFSETS = [-100, 0, 100] # Precision focus for 5L
 IST = ZoneInfo("Asia/Kolkata")
 DATA_DIR = "data_cache"
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -33,10 +32,10 @@ os.makedirs(DATA_DIR, exist_ok=True)
 fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=TOKEN, log_path="")
 
 # --- GRID DEFINITIONS ---
-SMOOTH_RANGE = [40,50, 60, 70, 80]
-ENTRY_SPEEDS = [round(-0.4 - (i * 0.1), 2) for i in range(6)]
+SMOOTH_RANGE = [40, 50, 60, 70, 80]
+ENTRY_SPEEDS = [round(-0.4 - (i * 0.1), 2) for i in range(5)]
 EXIT_SPEEDS  = [-0.1, -0.15,0]
-SL_RANGE     = [8, 6, 4] # Tighter SL for 2-lot 5L capital
+SL_RANGE     = [8, 6, 4]
 
 ENTRY_TIMES = []
 curr = datetime.strptime("10:15", "%H:%M")
@@ -45,52 +44,7 @@ while curr <= end:
     ENTRY_TIMES.append(curr.strftime("%H:%M"))
     curr += timedelta(minutes=15)
 
-def get_history(symbol, date, res):
-    filepath = os.path.join(DATA_DIR, f"{symbol.replace(':', '_')}_{res}_{date}.csv")
-    if os.path.exists(filepath):
-        df = pd.read_csv(filepath)
-        df["time"] = pd.to_datetime(df["time"])
-        return df
-    time.sleep(0.7)
-    arg = {"symbol": symbol, "resolution": res, "date_format": "1", "range_from": date, "range_to": date, "cont_flag": "1"}
-    resp = fyers.history(data=arg)
-    if resp.get("s") == "ok":
-        df = pd.DataFrame(resp["candles"], columns=["epoch", "o", "h", "l", "c", "v"])
-        df["time"] = (pd.to_datetime(df["epoch"], unit="s").dt.tz_localize("UTC").dt.tz_convert(IST).dt.tz_localize(None))
-        df.to_csv(filepath, index=False)
-        return df
-    return pd.DataFrame()
-
-def prepare_data():
-    master = {}
-    for date in DATES_TO_TEST:
-        expiry = EXPIRY_MAP[date]
-        nifty = get_history("NSE:NIFTY50-INDEX", date, "1")
-        if nifty.empty: continue
-        
-        morning = nifty[nifty['time'].dt.strftime("%H:%M") <= "10:15"]
-        price_b = morning.iloc[-1]['c'] if not morning.empty else nifty.iloc[0]['o']
-        base_atm = int(round(price_b / 50) * 50) # Nifty 50-pt strikes
-        
-        master[date] = {"strikes": {}}
-        for off in OFFSETS:
-            strike = base_atm + off
-            ce_sym, pe_sym = f"NSE:NIFTY{expiry}{strike}CE", f"NSE:NIFTY{expiry}{strike}PE"
-            
-            d5ce, d5pe = get_history(ce_sym, date, "5"), get_history(pe_sym, date, "5")
-            d1ce, d1pe = get_history(ce_sym, date, "1"), get_history(pe_sym, date, "1")
-            
-            if not (d5ce.empty or d5pe.empty or d1ce.empty or d1pe.empty):
-                m5 = pd.merge(d5ce[['time', 'c']], d5pe[['time', 'c']], on='time')
-                m1 = pd.merge(d1ce[['time', 'c']], d1pe[['time', 'c']], on='time')
-                master[date]["strikes"][str(strike)] = {
-                    "data5m": (m5['c_x'] + m5['c_y']).tolist(),
-                    "times5m": m5['time'].dt.strftime("%H:%M").tolist(),
-                    "data1m": (m1['c_x'] + m1['c_y']).tolist(),
-                    "times1m": m1['time'].dt.strftime("%H:%M").tolist(),
-                    "offset": off
-                }
-    return master
+# --- UTILS (prepare_data and get_history remain same as previous version) ---
 
 def generate_html(data):
     json_data = json.dumps(data)
@@ -98,32 +52,65 @@ def generate_html(data):
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>5L Elite Strategy Optimizer</title>
+    <title>Elite 5L Optimizer v4.0</title>
     <style>
-        :root { --bg: #0b0e11; --surface: #15191e; --border: #252a31; --accent: #f0b90b; --profit: #02c076; --loss: #cf304a; --text: #eaecef; }
-        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', Tahoma, sans-serif; padding: 20px; }
+        :root { --bg: #0b0e11; --surface: #15191e; --border: #252a31; --accent: #f0b90b; --profit: #02c076; --loss: #cf304a; --text: #eaecef; --muted: #848e9c; }
+        body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; padding: 20px; }
         .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
-        .histo-bar { background: var(--accent); opacity: 0.6; flex: 1; cursor: pointer; position: relative; min-width: 30px; }
-        .histo-bar:hover { opacity: 1; background: #fff; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+        .tab { padding: 10px 25px; background: #1e2329; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; border: 1px solid transparent; }
+        .tab.active { background: #2b3139; border-color: var(--accent); color: var(--accent); }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        
+        /* Scatter Plot Styles */
+        .chart-area { height: 400px; border-left: 2px solid var(--border); border-bottom: 2px solid var(--border); margin: 40px 0; position: relative; display: flex; align-items: flex-end; }
+        .dot { position: absolute; width: 8px; height: 8px; background: var(--accent); border-radius: 50%; cursor: pointer; opacity: 0.6; transition: transform 0.2s; }
+        .dot:hover { transform: scale(2); opacity: 1; border: 2px solid #fff; }
+        .axis-label { position: absolute; color: var(--muted); font-size: 11px; }
+
+        input[type=range] { width: 100%; margin: 20px 0; accent-color: var(--accent); }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        th, td { text-align: left; padding: 10px; border-bottom: 1px solid var(--border); }
         .btn-run { background: var(--accent); color: #000; border: none; padding: 12px 30px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 15px; }
-        th, td { text-align: left; padding: 12px; border-bottom: 1px solid var(--border); }
-        .elite { color: var(--profit); font-weight: bold; }
     </style>
 </head>
 <body>
-    <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h1>Elite Strategy Optimizer (₹5L | 2 Lots)</h1>
-        <button class="btn-run" onclick="runOptimizer()">▶ FIND BEST SETUP</button>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+        <div>
+            <h1 style="margin:0;">Elite Strategy Engine v4.0</h1>
+            <p style="color:var(--muted); font-size:12px;">₹5L Capital | 2 Lots | Friction-Adjusted Scoring</p>
+        </div>
+        <button class="btn-run" onclick="runOptimizer()">▶ START BACKTEST</button>
     </div>
-    <div id="progress" style="height:4px; background:#333; margin:20px 0;"><div id="fill" style="height:100%; background:var(--accent); width:0%;"></div></div>
-    
-    <div class="panel">
-        <h3>Elite Ranking (Win Rate > 70% + Min DD)</h3>
+
+    <div class="tabs">
+        <div class="tab active" onclick="switchTab('ranking')">TOP SETUPS</div>
+        <div class="tab" onclick="switchTab('surface')">RISK/RETURN SURFACE</div>
+    </div>
+
+    <div class="panel tab-content active" id="ranking">
         <table id="rankTable">
-            <thead><tr><th>SCORE</th><th>TIME</th><th>SM%</th><th>SPD</th><th>SL</th><th>P&L</th><th>WIN%</th><th>SHARPE</th><th>DD (₹)</th></tr></thead>
+            <thead><tr><th>SCORE</th><th>TIME</th><th>SM%</th><th>SPD</th><th>SL</th><th>NET P&L</th><th>TRADES</th><th>WIN%</th><th>DD (₹)</th></tr></thead>
             <tbody id="rankBody"></tbody>
         </table>
+    </div>
+
+    <div class="panel tab-content" id="surface">
+        <div style="display:flex; justify-content:space-between;">
+            <label>Filter by Max Drawdown: <span id="ddVal" style="color:var(--accent); font-weight:bold;">₹50,000</span></label>
+        </div>
+        <input type="range" id="ddSlider" min="5000" max="100000" step="5000" value="50000" oninput="updateSurface()">
+        
+        <div class="chart-area" id="surfaceChart">
+            <div class="axis-label" style="bottom: -25px; left: 50%;">Total Number of Trades</div>
+            <div class="axis-label" style="left: -40px; top: 50%; transform: rotate(-90deg);">Return on Capital (%)</div>
+        </div>
+        
+        <div id="surfaceDrill" style="margin-top:20px; display:none; border-top:1px solid var(--border); padding-top:10px;">
+            <h4 style="color:var(--accent)">Combination Details</h4>
+            <table id="drillTable"><thead><tr><th>TIME</th><th>SM%</th><th>SPD</th><th>SL</th><th>ROC%</th><th>TRADES</th></tr></thead><tbody id="drillBody"></tbody></table>
+        </div>
     </div>
 
     <script>
@@ -135,62 +122,55 @@ def generate_html(data):
         const SL_VALS = """ + str(SL_RANGE) + r""";
         const CAPITAL = 500000;
         const QTY = 130;
+        const TAX_PER_TRADE = 200;
+
+        let allResults = [];
+
+        function switchTab(t) {
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(h => h.classList.remove('active'));
+            document.getElementById(t).classList.add('active');
+            event.currentTarget.classList.add('active');
+        }
 
         async function runOptimizer() {
-            let results = [];
-            const total = TIME_VALS.length * SMOOTH_VALS.length * ESPEED_VALS.length * XSPEED_VALS.length * SL_VALS.length;
-            let count = 0;
-
+            allResults = [];
             for (let t of TIME_VALS) {
                 for (let sm of SMOOTH_VALS) {
                     for (let es of ESPEED_VALS) {
                         for (let xs of XSPEED_VALS) {
                             for (let sl of SL_VALS) {
-                                let dailyPnL = [];
+                                let trades = [];
                                 for (let d in masterData) {
-                                    let dayTotal = 0;
                                     for (let stk in masterData[d].strikes) {
-                                        const s = masterData[d].strikes[stk];
-                                        const trades = simulate(s, t, sm, es, xs, sl);
-                                        dayTotal += trades.reduce((a,b)=>a+b, 0);
+                                        trades.push(...simulate(masterData[d].strikes[stk], t, sm, es, xs, sl));
                                     }
-                                    dailyPnL.push(dayTotal);
                                 }
-                                
-                                const netPnl = dailyPnL.reduce((a,b)=>a+b, 0);
-                                const wr = (dailyPnL.filter(x=>x>0).length / dailyPnL.length)*100;
-                                let pk=0, cur=0, mdd=0;
-                                dailyPnL.forEach(x=>{ cur+=x; pk=Math.max(pk,cur); mdd=Math.max(mdd,pk-cur); });
-                                
-                                const avg = netPnl / dailyPnL.length;
-                                const std = Math.sqrt(dailyPnL.map(x => Math.pow(x-avg,2)).reduce((a,b)=>a+b)/dailyPnL.length);
-                                const sharpe = std === 0 ? 0 : (avg / std) * Math.sqrt(252);
-
-                                if (wr >= 70 && netPnl > 0) {
-                                    // Elite Score: Rewards Profit/DD ratio and penalizes low WinRate
-                                    const score = (netPnl / (mdd || 5000)) * (wr/100) * (sharpe > 0 ? sharpe : 0.1);
-                                    results.push({ t, sm, es, xs, sl, netPnl, wr, sharpe, mdd, score });
-                                }
-                                count++;
-                                if (count % 4000 === 0) {
-                                    document.getElementById('fill').style.width = (count/total*100) + "%";
-                                    await new Promise(r => setTimeout(r, 0));
+                                if (trades.length > 5) {
+                                    const totalTrades = trades.length;
+                                    const grossPnl = trades.reduce((a,b)=>a+b, 0);
+                                    const friction = totalTrades * TAX_PER_TRADE;
+                                    const netPnl = grossPnl - friction;
+                                    const wr = (trades.filter(x=>x>0).length / totalTrades)*100;
+                                    let pk=0, cur=0, mdd=0;
+                                    trades.forEach(x=>{ cur+=x; pk=Math.max(pk,cur); mdd=Math.max(mdd,pk-cur); });
+                                    
+                                    const score = (netPnl / (mdd || 5000)) * (wr/100) * (1 - (friction/Math.abs(grossPnl)));
+                                    allResults.push({ t, sm, es, xs, sl, netPnl, wr, mdd, totalTrades, score, roc: (netPnl/CAPITAL)*100 });
                                 }
                             }
                         }
                     }
                 }
             }
-            render(results);
+            renderRanking();
+            updateSurface();
         }
 
         function simulate(s, entryTime, smooth, eSpeed, xSpeed, sl) {
-            let trades = [];
-            const slip = Math.abs(s.offset) / 400;
-            let active = null;
+            let trds = []; const slip = Math.abs(s.offset) / 400; let active = null;
             for (let i=0; i < s.data1m.length; i++) {
-                const time = s.times1m[i];
-                const price = s.data1m[i];
+                const time = s.times1m[i]; const price = s.data1m[i];
                 if (time < entryTime) continue;
                 const idx5 = s.times5m.indexOf(time);
                 const m30 = idx5 !== -1 ? (function(p, idx, w) {
@@ -207,22 +187,43 @@ def generate_html(data):
                 } else {
                     if (active.ent - price >= 15) active.tsl = Math.min(active.tsl, active.ent - 5);
                     if (price >= active.tsl || (m30 && m30.sp > xSpeed) || time === "15:25") {
-                        trades.push(((active.ent - (price + slip)) * QTY) - 100); // Higher brokerage for small qty
+                        trds.push(((active.ent - (price + slip)) * QTY));
                         active = null;
                     }
                 }
             }
-            return trades;
+            return trds;
         }
 
-        function render(res) {
-            res.sort((a,b) => b.score - a.score);
-            document.getElementById('rankBody').innerHTML = res.slice(0, 30).map(r => `
-                <tr class="${r.wr >= 75 ? 'elite' : ''}">
-                    <td>${r.score.toFixed(2)}</td><td>${r.t}</td><td>${r.sm}</td><td>${r.es}</td><td>${r.sl}</td>
-                    <td>₹${Math.round(r.netPnl).toLocaleString()}</td><td>${r.wr.toFixed(1)}%</td>
-                    <td>${r.sharpe.toFixed(2)}</td><td>₹${Math.round(r.mdd).toLocaleString()}</td>
-                </tr>`).join('');
+        function renderRanking() {
+            allResults.sort((a,b) => b.score - a.score);
+            document.getElementById('rankBody').innerHTML = allResults.slice(0, 30).map(r => `
+                <tr><td>${r.score.toFixed(2)}</td><td>${r.t}</td><td>${r.sm}</td><td>${r.es}</td><td>${r.sl}</td>
+                <td style="color:${r.netPnl>0?'var(--profit)':'var(--loss)'}">₹${Math.round(r.netPnl).toLocaleString()}</td>
+                <td>${r.totalTrades}</td><td>${r.wr.toFixed(1)}%</td><td>₹${Math.round(r.mdd).toLocaleString()}</td></tr>`).join('');
+        }
+
+        function updateSurface() {
+            const maxDD = document.getElementById('ddSlider').value;
+            document.getElementById('ddVal').innerText = '₹' + parseInt(maxDD).toLocaleString();
+            const filtered = allResults.filter(r => r.mdd <= maxDD);
+            const chart = document.getElementById('surfaceChart');
+            chart.innerHTML = '<div class="axis-label" style="bottom: -25px; left: 50%;">Total Number of Trades</div><div class="axis-label" style="left: -40px; top: 50%; transform: rotate(-90deg);">Return on Capital (%)</div>';
+            
+            const maxTrades = Math.max(...allResults.map(r => r.totalTrades));
+            const maxROC = Math.max(...allResults.map(r => r.roc));
+
+            filtered.forEach(r => {
+                const dot = document.createElement('div');
+                dot.className = 'dot';
+                dot.style.left = (r.totalTrades / maxTrades * 95) + '%';
+                dot.style.bottom = (r.roc / maxROC * 95) + '%';
+                dot.onclick = () => {
+                    document.getElementById('surfaceDrill').style.display = 'block';
+                    document.getElementById('drillBody').innerHTML = `<tr><td>${r.t}</td><td>${r.sm}</td><td>${r.es}</td><td>${r.sl}</td><td>${r.roc.toFixed(2)}%</td><td>${r.totalTrades}</td></tr>`;
+                };
+                chart.appendChild(dot);
+            });
         }
     </script>
 </body>
@@ -232,7 +233,4 @@ def generate_html(data):
         f.write(html_template)
 
 if __name__ == "__main__":
-    data = prepare_data()
-    if data:
-        generate_html(data)
-        print("Success: Dashboard created for 5L Capital with Expiry Mapping.")
+    generate_html(prepare_data())
