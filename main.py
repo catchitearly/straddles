@@ -33,9 +33,9 @@ os.makedirs(DATA_DIR, exist_ok=True)
 fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=TOKEN, log_path="")
 
 # --- GRID DEFINITIONS ---
-SMOOTH_RANGE = [50, 60, 70, 80]
+SMOOTH_RANGE = [40,50, 60, 70, 80]
 ENTRY_SPEEDS = [round(-0.4 - (i * 0.1), 2) for i in range(6)]
-EXIT_SPEEDS  = [-0.1, -0.15]
+EXIT_SPEEDS  = [-0.1, -0.15,0]
 SL_RANGE     = [8, 6, 4] # Tighter SL for 2-lot 5L capital
 
 ENTRY_TIMES = []
