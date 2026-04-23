@@ -84,63 +84,84 @@ def generate_html(data):
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Elite Optimizer v4.6</title>
+    <title>Elite High-Precision Optimizer v5.0</title>
     <style>
-        :root { --bg: #0b0e11; --surface: #15191e; --border: #252a31; --accent: #f0b90b; --profit: #02c076; --loss: #cf304a; --text: #eaecef; --muted: #848e9c; }
-        body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; padding: 20px; }
-        .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
-        .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
-        .tab { padding: 10px 20px; background: #1e2329; cursor: pointer; border-radius: 4px; font-weight: bold; transition: 0.3s; }
-        .tab.active { background: var(--accent); color: #000; }
+        :root { --bg: #0b0e11; --surface: #15191e; --border: #252a31; --accent: #00d4ff; --profit: #02c076; --loss: #cf304a; --text: #eaecef; --muted: #848e9c; }
+        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; }
+        .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 25px; margin-bottom: 20px; }
+        .tabs { display: flex; gap: 15px; margin-bottom: 25px; }
+        .tab { padding: 12px 25px; background: #1e2329; cursor: pointer; border-radius: 6px; font-weight: bold; color: var(--muted); border: 1px solid transparent; }
+        .tab.active { background: var(--accent); color: #000; border-color: #fff; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
-        .chart-container { height: 450px; border-left: 2px solid var(--border); border-bottom: 2px solid var(--border); position: relative; margin: 40px; background: #0b0e11; }
-        .dot { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); cursor: pointer; transform: translate(-50%, 50%); opacity: 0.8; border: 1px solid #000; }
-        .dot:hover { border: 2px solid white; z-index: 100; opacity: 1; transform: scale(1.5) translate(-33%, 33%); }
-        .axis-label { position: absolute; color: var(--muted); font-size: 12px; }
-        input[type=range] { width: 100%; accent-color: var(--accent); cursor: pointer; }
-        table { width: 100%; border-collapse: collapse; font-size: 11px; }
-        th, td { text-align: left; padding: 10px; border-bottom: 1px solid var(--border); }
+        .metric-card { border-left: 4px solid var(--accent); padding-left: 15px; margin-bottom: 15px; }
+        .metric-val { font-size: 20px; font-weight: bold; color: var(--accent); }
+        .chart-container { height: 450px; border-left: 2px solid var(--border); border-bottom: 2px solid var(--border); position: relative; margin: 40px; background: #0b0e11; border-radius: 4px;}
+        .dot { position: absolute; width: 14px; height: 14px; border-radius: 50%; cursor: pointer; transform: translate(-50%, 50%); opacity: 0.8; border: 2px solid #000; transition: 0.2s; }
+        .dot:hover { border: 2px solid white; z-index: 100; transform: scale(1.8) translate(-25%, 25%); opacity: 1; }
+        input[type=range] { width: 100%; accent-color: var(--accent); cursor: pointer; margin-top: 10px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th { background: #1e2329; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-size: 10px; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid var(--border); }
+        .highlight-row { background: rgba(0, 212, 255, 0.05); }
     </style>
 </head>
 <body>
-    <h1>Strategy Analyzer v4.6</h1>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:30px;">
+        <div>
+            <h1 style="margin:0; letter-spacing:-1px;">ELITE <span style="color:var(--accent)">MATCH</span> v5.0</h1>
+            <p style="color:var(--muted); font-size:12px; margin-top:5px;">Targeting: >1.5% Return | <0.4% Max DD | <2 Trades/Day</p>
+        </div>
+        <button onclick="runSim()" style="padding:15px 40px; background:var(--accent); color:#000; border:none; font-weight:900; border-radius:8px; cursor:pointer; box-shadow: 0 4px 15px rgba(0,212,255,0.3);">BACKTEST ENGINE</button>
+    </div>
     
     <div class="tabs">
-        <div class="tab active" onclick="switchTab('controls')">Settings & Rank</div>
-        <div class="tab" onclick="switchTab('graph')">Surface Graph View</div>
+        <div class="tab active" onclick="switchTab('summary')">ELITE SELECTIONS</div>
+        <div class="tab" onclick="switchTab('graph')">SURFACE ANALYSIS</div>
+        <div class="tab" onclick="switchTab('settings')">STRATEGY PARAMETERS</div>
     </div>
 
-    <div id="controls" class="tab-content active">
+    <div id="summary" class="tab-content active">
         <div class="panel">
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                <div>
-                    <label>Entry Threshold (Speed): <span id="eVal" style="color:var(--accent)">-0.30</span></label>
-                    <input type="range" id="eSpeed" min="-1.0" max="-0.1" step="0.05" value="-0.3" oninput="document.getElementById('eVal').innerText=this.value">
-                </div>
-                <div>
-                    <label>Exit Threshold (Speed): <span id="xVal" style="color:var(--accent)">0.00</span></label>
-                    <input type="range" id="xSpeed" min="-0.2" max="0.3" step="0.05" value="0.0" oninput="document.getElementById('xVal').innerText=this.value">
-                </div>
-            </div>
-            <button onclick="runSim()" style="margin-top:20px; width:100%; padding:15px; background:var(--accent); border:none; font-weight:bold; border-radius:4px; cursor:pointer;">RUN BACKTEST ENGINE</button>
-        </div>
-        <div class="panel">
-            <table id="rankTable">
-                <thead><tr><th>SCORE</th><th>TIME</th><th>SM%</th><th>NET P&L</th><th>WIN%</th><th>TRADES</th><th>MAX DD%</th></tr></thead>
-                <tbody id="rankBody"></tbody>
+            <h3 style="margin-top:0;">Top High-Precision Setups</h3>
+            <p style="font-size:11px; color:var(--muted); margin-bottom:20px;">Combinations meeting your 0.4% Drawdown and 1.5% Return constraints.</p>
+            <table id="eliteTable">
+                <thead><tr><th>SCORE</th><th>TIME</th><th>SM%</th><th>NET P&L</th><th>ROC %</th><th>WIN%</th><th>TRADES/DAY</th><th>MAX DD%</th></tr></thead>
+                <tbody id="eliteBody"></tbody>
             </table>
         </div>
     </div>
 
     <div id="graph" class="tab-content">
         <div class="panel">
-            <label>Filter: Only show setups with Drawdown < <span id="ddSliderVal" style="color:var(--accent)">5%</span></label>
-            <input type="range" id="ddLimit" min="0.5" max="15" step="0.5" value="5" oninput="document.getElementById('ddSliderVal').innerText=this.value+'%'; updateGraph();">
-            
-            <div class="chart-container" id="surface">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:30px;">
+                <div>
+                    <label>Drawdown Filter: <span id="ddSliderVal" style="color:var(--accent)">0.4%</span></label>
+                    <input type="range" id="ddLimit" min="0.1" max="2.0" step="0.1" value="0.4" oninput="document.getElementById('ddSliderVal').innerText=this.value+'%'; updateGraph();">
                 </div>
-            <div style="text-align:center; color:var(--muted); font-size:12px; margin-top:10px;">X-Axis: Number of Trades | Y-Axis: Return on Capital (ROC %)</div>
+                <div>
+                    <label>Min Return Filter: <span id="retSliderVal" style="color:var(--accent)">1.5%</span></label>
+                    <input type="range" id="retLimit" min="0.1" max="5.0" step="0.1" value="1.5" oninput="document.getElementById('retSliderVal').innerText=this.value+'%'; updateGraph();">
+                </div>
+            </div>
+            
+            <div class="chart-container" id="surface"></div>
+            <div style="text-align:center; color:var(--muted); font-size:11px; margin-top:10px;">Dots represent setups. Y-Axis: ROC % | X-Axis: Total Trades</div>
+        </div>
+    </div>
+
+    <div id="settings" class="tab-content">
+        <div class="panel">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <div class="metric-card">
+                    <label>Entry Acceleration (Speed Threshold): <span id="eVal">-0.30</span></label>
+                    <input type="range" id="eSpeed" min="-1.0" max="-0.1" step="0.05" value="-0.3" oninput="document.getElementById('eVal').innerText=this.value">
+                </div>
+                <div class="metric-card">
+                    <label>Exit Recovery (Speed Threshold): <span id="xVal">0.00</span></label>
+                    <input type="range" id="xSpeed" min="-0.2" max="0.3" step="0.05" value="0.0" oninput="document.getElementById('xVal').innerText=this.value">
+                </div>
+            </div>
         </div>
     </div>
 
@@ -149,6 +170,7 @@ def generate_html(data):
         const CAPITAL = 500000;
         const QTY = 130;
         const TAX = 200;
+        const TOTAL_DAYS = """ + str(len(DATES_TO_TEST)) + r""";
         let allResults = [];
 
         function switchTab(id) {
@@ -180,14 +202,16 @@ def generate_html(data):
                         let pk=0, cur=0, mdd=0;
                         trades.forEach(x=>{ cur+=x; pk=Math.max(pk,cur); mdd=Math.max(mdd,pk-cur); });
                         
+                        const roc = (net/CAPITAL)*100;
                         const ddPct = (mdd / CAPITAL) * 100;
-                        const score = net / (mdd + 500); 
-                        allResults.push({ t, sm, net, wr, mdd: ddPct, count: trades.length, score, roc: (net/CAPITAL)*100 });
+                        const tradesPerDay = trades.length / TOTAL_DAYS;
+                        
+                        allResults.push({ t, sm, net, wr, mdd: ddPct, count: trades.length, tpd: tradesPerDay, score: (net/(mdd+500)), roc });
                     }
                 }
             }
-            renderTable();
-            alert("Analysis Complete. Check Rank Table or Graph.");
+            renderEliteTable();
+            alert("Engine Processed " + allResults.length + " setups.");
         }
 
         function simulate(date, s, startTime, smooth, eThr, xThr) {
@@ -219,23 +243,30 @@ def generate_html(data):
             return trds;
         }
 
-        function renderTable() {
-            allResults.sort((a,b) => b.score - a.score);
-            document.getElementById('rankBody').innerHTML = allResults.slice(0, 30).map(r => `
-                <tr><td>${r.score.toFixed(2)}</td><td>${r.t}</td><td>${r.sm}</td>
-                <td style="color:${r.net>0?'var(--profit)':'var(--loss)'}">₹${Math.round(r.net).toLocaleString()}</td>
-                <td>${r.wr.toFixed(1)}%</td><td>${r.count}</td><td>${r.mdd.toFixed(1)}%</td></tr>`).join('');
+        function renderEliteTable() {
+            const elite = allResults.filter(r => r.roc >= 1.5 && r.tpd < 2 && r.mdd <= 0.4);
+            elite.sort((a,b) => b.roc - a.roc);
+            
+            document.getElementById('eliteBody').innerHTML = elite.length > 0 ? elite.map(r => `
+                <tr class="highlight-row">
+                    <td>${r.score.toFixed(2)}</td>
+                    <td>${r.t}</td>
+                    <td>${r.sm}%</td>
+                    <td style="color:var(--profit); font-weight:bold;">₹${Math.round(r.net).toLocaleString()}</td>
+                    <td>${r.roc.toFixed(2)}%</td>
+                    <td>${r.wr.toFixed(1)}%</td>
+                    <td>${r.tpd.toFixed(1)}</td>
+                    <td style="color:var(--accent)">${r.mdd.toFixed(2)}%</td>
+                </tr>`).join('') : '<tr><td colspan="8" style="text-align:center; padding:40px; color:var(--muted)">No combinations meet these tight constraints. Try adjusting Strategy Parameters.</td></tr>';
         }
 
         function updateGraph() {
-            const limit = parseFloat(document.getElementById('ddLimit').value);
+            const ddLimit = parseFloat(document.getElementById('ddLimit').value);
+            const retLimit = parseFloat(document.getElementById('retLimit').value);
             const chart = document.getElementById('surface');
-            chart.innerHTML = ''; // Clear
+            chart.innerHTML = '';
             
-            if (allResults.length === 0) {
-                chart.innerHTML = '<div style="padding:20px; color:var(--muted)">Run Analysis first...</div>';
-                return;
-            }
+            if (allResults.length === 0) return;
 
             const maxT = Math.max(...allResults.map(r => r.count)) || 1;
             const maxR = Math.max(...allResults.map(r => r.roc)) || 1;
@@ -243,20 +274,22 @@ def generate_html(data):
             const rangeR = (maxR - minR) || 1;
 
             allResults.forEach(r => {
-                if (r.mdd <= limit) {
-                    const dot = document.createElement('div');
-                    dot.className = 'dot';
-                    // Calculate % from left (X = Count) and bottom (Y = ROC)
-                    const leftPos = (r.count / maxT) * 95;
-                    const bottomPos = ((r.roc - minR) / rangeR) * 95;
-                    
-                    dot.style.left = leftPos + '%';
-                    dot.style.bottom = bottomPos + '%';
-                    dot.style.background = r.roc > 0 ? 'var(--profit)' : 'var(--loss)';
-                    dot.title = `Time: ${r.t} | SM: ${r.sm}% | ROC: ${r.roc.toFixed(1)}% | DD: ${r.mdd.toFixed(1)}%`;
-                    
-                    chart.appendChild(dot);
+                const dot = document.createElement('div');
+                dot.className = 'dot';
+                dot.style.left = (r.count / maxT * 95) + '%';
+                dot.style.bottom = ((r.roc - minR) / rangeR * 95) + '%';
+                
+                // Color coding for targets
+                if (r.mdd <= ddLimit && r.roc >= retLimit) {
+                    dot.style.background = 'var(--accent)';
+                    dot.style.boxShadow = '0 0 10px var(--accent)';
+                } else {
+                    dot.style.background = '#2b3139';
+                    dot.style.opacity = '0.3';
                 }
+                
+                dot.title = `ROC: ${r.roc.toFixed(1)}% | DD: ${r.mdd.toFixed(2)}% | TPD: ${r.tpd.toFixed(1)}`;
+                chart.appendChild(dot);
             });
         }
     </script>
@@ -267,11 +300,7 @@ def generate_html(data):
         f.write(html_template)
 
 if __name__ == "__main__":
-    print("--- STEP 1: PREPARING DATA ---")
     data = prepare_data()
     if data:
-        print("--- STEP 2: GENERATING DASHBOARD ---")
         generate_html(data)
-        print("--- SUCCESS: Open simulator_optimizer.html ---")
-    else:
-        print("--- ERROR: No Data Found in cache ---")
+        print("Success: v5.0 Dashboard generated with Elite Filtering.")
