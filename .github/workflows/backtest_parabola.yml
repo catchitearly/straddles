@@ -1,0 +1,43 @@
+name: Parabolic Move Backtest
+
+on:
+  schedule:
+    - cron: '0 18 * * *'  # Run daily at 6 PM IST
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        pip install pandas numpy scipy fyers-apiv3
+    
+    - name: Run backtest
+      env:
+        CLIENT_ID: ${{ secrets.CLIENT_ID }}
+        FYERS_ACCESS_TOKEN: ${{ secrets.FYERS_ACCESS_TOKEN }}
+      run: python parabolic_detector.py
+    
+    - name: Upload dashboard
+      uses: actions/upload-artifact@v3
+      with:
+        name: backtest-dashboard
+        path: parabolic_dashboard.html
+    
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      if: github.ref == 'refs/heads/main'
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./
+        publish_branch: gh-pages
+        keep_files: false
