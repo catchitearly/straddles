@@ -22,7 +22,8 @@ EXPIRY_MAP = {
     "2026-04-16": "26421",
     "2026-04-20": "26421",  
     "2026-04-21": "26421",
-    "2026-04-22": "26APR"
+    "2026-04-22": "26APR",
+    "2026-04-24": "26APR"
 }
 
 DATES_TO_TEST = list(EXPIRY_MAP.keys())
@@ -83,7 +84,7 @@ def prepare_data():
         
         morning = nifty[nifty['time'].dt.strftime("%H:%M") <= "10:15"]
         price_b = morning.iloc[-1]['c'] if not morning.empty else nifty.iloc[0]['o']
-        base_atm = int(round(price_b / 50) * 50)
+        base_atm = int(round(price_b / 100) * 100)
         
         master[date] = {"strikes": {}}
         for off in OFFSETS:
