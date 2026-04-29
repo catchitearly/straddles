@@ -327,7 +327,7 @@ def main():
     if fyers.get_profile().get("s") != "ok":
         logger.error("Auth failed."); return
 
-    atm, results = 24100, {}
+    atm, results = 24300, {}
     for offset in OFFSETS:
         strike = atm + offset
         ce_df = fetch_candles(fyers, f"NSE:NIFTY{EXPIRY}{strike}CE", TARGET_DATE)
