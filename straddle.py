@@ -12,7 +12,7 @@ from fyers_apiv3 import fyersModel
 # --- CONFIGURATION ---
 CLIENT_ID = os.getenv("CLIENT_ID")
 TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
-TARGET_DATE = "2026-04-29"
+TARGET_DATE = "2026-04-30"
 EXPIRY = "26505"
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 
@@ -327,7 +327,7 @@ def main():
     if fyers.get_profile().get("s") != "ok":
         logger.error("Auth failed."); return
 
-    atm, results = 24300, {}
+    atm, results = 23800, {}
     for offset in OFFSETS:
         strike = atm + offset
         ce_df = fetch_candles(fyers, f"NSE:NIFTY{EXPIRY}{strike}CE", TARGET_DATE)
