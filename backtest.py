@@ -35,9 +35,21 @@ def get_history(symbol, date, res):
     filename = f"{clean_sym}_{res}_{date}.csv"
     filepath = os.path.join(DATA_DIR, filename)
 
+    df = pd.DataFrame()
+
     if os.path.exists(filepath):
         df = pd.read_csv(filepath)
         df["time"] = pd.to_datetime(df["time"])
+        # --- CRITICAL FIX START ---
+        # If vwap is missing from the cached CSV, calculate it now
+        if 'vwap' not in df.columns and not df.empty:
+            if 'v' in df.columns and 'c' in df.columns:
+                df['vwap'] = (df['c'] * df['v']).cumsum() / df['v'].cumsum()
+            else:
+                # If volume is missing, vwap cannot be calculated; 
+                # we'll use close price as a placeholder or return empty
+                df['vwap'] = df['c'] 
+        # --- CRITICAL FIX END ---
         return df
 
     time.sleep(0.7) 
@@ -49,10 +61,14 @@ def get_history(symbol, date, res):
     if resp.get("s") == "ok" and resp.get("candles"):
         df = pd.DataFrame(resp["candles"], columns=["epoch","o","h","l","c","v"])
         df["time"] = pd.to_datetime(df["epoch"], unit="s").dt.tz_localize("UTC").dt.tz_convert(IST).dt.tz_localize(None)
-        # Calculate VWAP
+        
+        # Calculate VWAP for new API data
         df['vwap'] = (df['c'] * df['v']).cumsum() / df['v'].cumsum()
+        
+        # Save with the vwap column so future loads don't fail
         df.to_csv(filepath, index=False)
         return df
+        
     return pd.DataFrame()
 
 def prepare_simulator_data():
