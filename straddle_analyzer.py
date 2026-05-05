@@ -367,7 +367,7 @@ def main():
         
         # Dynamic ATM calculation (you can modify based on current market)
         # For now using fixed ATM - you might want to fetch current spot price
-        atm = 24200  # Update this dynamically if needed
+        atm = 24000  # Update this dynamically if needed
         
         results = {}
         successful_fetches = 0
