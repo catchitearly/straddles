@@ -14,7 +14,7 @@ import sys
 CLIENT_ID = os.getenv("CLIENT_ID")
 TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 TARGET_DATE = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
-EXPIRY = "26505"  # Update as needed
+EXPIRY = "26512"  # Update as needed
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 
 OUTPUT_DIR = "output"
