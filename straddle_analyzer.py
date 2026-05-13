@@ -14,7 +14,7 @@ import sys
 CLIENT_ID = os.getenv("CLIENT_ID")
 TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 TARGET_DATE = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
-EXPIRY = "26512"  # Update as needed
+EXPIRY = "26519"  # Update as needed
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 
 OUTPUT_DIR = "output"
@@ -367,7 +367,7 @@ def main():
         
         # Dynamic ATM calculation (you can modify based on current market)
         # For now using fixed ATM - you might want to fetch current spot price
-        atm = 23700  # Update this dynamically if needed
+        atm = 23400  # Update this dynamically if needed
         
         results = {}
         successful_fetches = 0
