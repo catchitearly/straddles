@@ -446,7 +446,7 @@ def main():
 
         logger.info(f"Successfully authenticated. Running analysis for {TARGET_DATE}")
 
-        atm = 23200  # Update this dynamically if needed
+        atm = 23000  # Update this dynamically if needed
 
         results = {}
         successful_fetches = 0
