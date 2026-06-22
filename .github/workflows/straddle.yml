@@ -1,8 +1,7 @@
 name: Straddle Dashboard
 
 on:
-  schedule:
-    - cron: "05 10 * * 1-5"   # 3:35 PM IST on weekdays
+ 
   workflow_dispatch:
 
 jobs:
