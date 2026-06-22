@@ -1,8 +1,7 @@
 name: Parabolic Move Backtest
 
 on:
-  schedule:
-    - cron: '0 18 * * *'  # Run daily at 6 PM IST
+  
   workflow_dispatch:  # Manual trigger
 
 jobs:
