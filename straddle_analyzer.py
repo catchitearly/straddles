@@ -18,7 +18,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 TARGET_DATE = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
-EXPIRY = "26623"  # Update as needed
+EXPIRY = "26JUN"  # Update as needed
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 
 OUTPUT_DIR = "output"
@@ -446,7 +446,7 @@ def main():
 
         logger.info(f"Successfully authenticated. Running analysis for {TARGET_DATE}")
 
-        atm = 24100  # Update this dynamically if needed
+        atm = 23800  # Update this dynamically if needed
 
         results = {}
         successful_fetches = 0
