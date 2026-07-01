@@ -480,7 +480,7 @@ def main():
             logger.info(f"✓ Dashboard generated: {docs_path}")
 
             # Send to Telegram
-            send_telegram_summary(rankings, atm, successful_fetches, len(OFFSETS))
+            #send_telegram_summary(rankings, atm, successful_fetches, len(OFFSETS))
             send_telegram_document(
                 docs_path,
                 caption=f"📊 <b>Straddle Dashboard</b> — {TARGET_DATE}\nOpen in browser to view interactive charts."
