@@ -86,7 +86,7 @@ TSL_ACTIVATION_PROFIT = 5.0
 TSL_INITIAL_DISTANCE = 2.0
 TSL_INCREMENT_PER_POINT = 1.0
 
-LOT_SIZE = 65  # Update to the current NIFTY lot size
+LOT_SIZE = 75  # Update to the current NIFTY lot size
 
 OUTPUT_DIR = "backtest_output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -280,17 +280,47 @@ def summarize(trades_df):
 
 
 def build_report_html(trades_df, summary, atm):
-    equity = trades_df["points"].cumsum() if not trades_df.empty else pd.Series(dtype=float)
-    fig = go.Figure(go.Scatter(
-        x=list(range(1, len(equity) + 1)), y=equity,
-        mode="lines+markers", line=dict(color=ACCENT, width=2)
-    ))
-    fig.update_layout(
-        title="Cumulative Points (per trade)", template="plotly_dark",
-        paper_bgcolor=CARD, plot_bgcolor=CARD, height=400,
-        xaxis_title="Trade #", yaxis_title="Cumulative Points",
-        margin=dict(l=10, r=10, t=40, b=10)
-    )
+    if not trades_df.empty:
+        exit_times = trades_df["exit_time"]
+        points = trades_df["points"]
+        cumulative = points.cumsum()
+        trade_labels = [f"{r.strike} ({r.exit_reason})" for r in trades_df.itertuples()]
+
+        # --- Individual trade P&L (bar chart, one bar per trade, win/loss colored) ---
+        fig_trades = go.Figure(go.Bar(
+            x=exit_times, y=points,
+            marker_color=[ACCENT if p > 0 else RED for p in points],
+            text=[f"{p:+.1f}" for p in points], textposition="outside", cliponaxis=False,
+            customdata=trade_labels,
+            hovertemplate="%{customdata}<br>Exit: %{x}<br>Points: %{y:.2f}<extra></extra>"
+        ))
+        fig_trades.update_layout(
+            title="Individual Trade P&L", template="plotly_dark",
+            paper_bgcolor=CARD, plot_bgcolor=CARD, height=380,
+            xaxis_title="Exit Time", yaxis_title="Points",
+            margin=dict(l=10, r=10, t=40, b=10)
+        )
+
+        # --- Cumulative intraday P&L (line chart, one point per trade exit, on a real time axis) ---
+        fig_equity = go.Figure(go.Scatter(
+            x=exit_times, y=cumulative,
+            mode="lines+markers",
+            line=dict(color=ACCENT, width=2),
+            marker=dict(color=[ACCENT if p > 0 else RED for p in points], size=8),
+            fill="tozeroy", fillcolor="rgba(0,229,176,0.08)"
+        ))
+        fig_equity.add_hline(y=0, line=dict(color=MUTED, width=1, dash="dot"))
+        fig_equity.update_layout(
+            title="Cumulative P&L Through The Day", template="plotly_dark",
+            paper_bgcolor=CARD, plot_bgcolor=CARD, height=380,
+            xaxis_title="Time", yaxis_title="Cumulative Points",
+            margin=dict(l=10, r=10, t=40, b=10)
+        )
+        trades_chart_html = fig_trades.to_html(full_html=False, include_plotlyjs='cdn')
+        equity_chart_html = fig_equity.to_html(full_html=False, include_plotlyjs=False)
+    else:
+        trades_chart_html = "<div style='color:#64748b;padding:20px;'>No trades taken.</div>"
+        equity_chart_html = ""
 
     rows_html = "".join([
         f"""<tr style="border-bottom:1px solid {BORDER};">
@@ -329,8 +359,12 @@ h2 {{ font-size:14px; color:{ACCENT}; letter-spacing:1px; }}
     <div class="stats">{summary_html}</div>
 </div>
 <div class="card">
-    <h2>EQUITY CURVE</h2>
-    {fig.to_html(full_html=False, include_plotlyjs='cdn')}
+    <h2>INDIVIDUAL TRADE P&amp;L</h2>
+    {trades_chart_html}
+</div>
+<div class="card">
+    <h2>CUMULATIVE P&amp;L (INTRADAY)</h2>
+    {equity_chart_html}
 </div>
 <div class="card">
     <h2>TRADE LOG</h2>
