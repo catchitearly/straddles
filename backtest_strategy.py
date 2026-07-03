@@ -86,7 +86,7 @@ TSL_ACTIVATION_PROFIT = 5.0
 TSL_INITIAL_DISTANCE = 2.0
 TSL_INCREMENT_PER_POINT = 1.0
 
-LOT_SIZE = 75  # Update to the current NIFTY lot size
+LOT_SIZE = 65  # Update to the current NIFTY lot size
 
 OUTPUT_DIR = "backtest_output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
