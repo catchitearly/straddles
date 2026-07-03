@@ -29,7 +29,7 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install fyers-apiv3 pandas plotly
+        pip install fyers-apiv3 pandas plotly scipy
     
     - name: Create output directory
       run: |
