@@ -25,6 +25,8 @@ EXPIRY_DATE = "2026-07-07"  # Update as needed - actual calendar expiry date, mu
 EXPIRY_TIME = "15:30"  # Market close time on expiry day
 RISK_FREE_RATE = 0.065  # Annualised risk-free rate used for Black-Scholes / IV solving
 SPOT_SYMBOL = "NSE:NIFTY50-INDEX"
+STRIKE_STEP = 100  # Nifty weekly strikes are in steps of 50
+FALLBACK_ATM = 24300  # Used only if the spot fetch fails
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 
 OUTPUT_DIR = "output"
@@ -638,6 +640,30 @@ def fetch_candles(fyers, symbol, date):
         logger.error(f"Error fetching data for {symbol}: {e}")
     return pd.DataFrame()
 
+def compute_atm(fyers, spot_df, step=STRIKE_STEP, fallback=FALLBACK_ATM):
+    """Determine the ATM strike from the latest available spot price.
+    Tries a live quote first (most accurate intraday), falls back to the
+    last close in spot_df, and finally to FALLBACK_ATM if both fail.
+    """
+    spot_price = None
+    try:
+        quote_resp = fyers.quotes(data={"symbols": SPOT_SYMBOL})
+        if quote_resp.get("s") == "ok" and quote_resp.get("d"):
+            spot_price = quote_resp["d"][0]["v"]["lp"]
+    except Exception as e:
+        logger.warning(f"Live quote fetch failed, will fall back to candle data: {e}")
+
+    if spot_price is None and not spot_df.empty:
+        spot_price = spot_df.iloc[-1]["spot"]
+
+    if spot_price is None or spot_price != spot_price:  # None or NaN
+        logger.warning(f"Could not determine spot price - falling back to hardcoded ATM {fallback}")
+        return fallback
+
+    atm = int(round(spot_price / step) * step)
+    logger.info(f"Spot price: {spot_price} -> ATM strike: {atm}")
+    return atm
+
 # --- MAIN ---
 
 def main():
@@ -655,14 +681,14 @@ def main():
 
         logger.info(f"Successfully authenticated. Running analysis for {TARGET_DATE}")
 
-        atm = 24300  # Update this dynamically if needed
-
-        # Spot index candles - needed to compute IV / Greeks
+        # Spot index candles - needed to compute IV / Greeks AND to derive ATM
         spot_df = fetch_candles(fyers, SPOT_SYMBOL, TARGET_DATE)
         if spot_df.empty:
             logger.warning("Could not fetch spot index data - IV/Greeks will be unavailable.")
         else:
             spot_df = spot_df[["time", "close"]].rename(columns={"close": "spot"})
+
+        atm = compute_atm(fyers, spot_df)
 
         results = {}
         successful_fetches = 0
