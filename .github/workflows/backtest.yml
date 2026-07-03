@@ -1,42 +1,56 @@
-name: Straddle Backtest Simulator
+name: Backtest Straddle Strategy
+
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      target_date:
+        description: "Backtest date (YYYY-MM-DD)"
+        required: true
+        type: string
+      expiry_code:
+        description: "Fyers option symbol expiry code (e.g. 26707)"
+        required: true
+        type: string
+      expiry_date:
+        description: "Actual calendar expiry date (YYYY-MM-DD)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
 
 jobs:
   backtest:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      CLIENT_ID: ${{ secrets.CLIENT_ID }}
-      FYERS_ACCESS_TOKEN: ${{ secrets.FYERS_ACCESS_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install pandas fyers-apiv3 pytz
-
-      - name: Run Backtester
-        run: python backtest.py
-
-      - name: Commit Cache
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          mkdir -p data_cache
-          git add data_cache/*.csv
-          git commit -m "Update cache [skip ci]" || echo "No changes"
-          git push
+          pip install --upgrade pip
+          pip install fyers-apiv3 pandas plotly scipy requests
 
-      - name: Upload HTML
+      - name: Run backtest
+        env:
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          FYERS_ACCESS_TOKEN: ${{ secrets.FYERS_ACCESS_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python backtest_strategy.py \
+            --date "${{ github.event.inputs.target_date }}" \
+            --expiry-code "${{ github.event.inputs.expiry_code }}" \
+            --expiry-date "${{ github.event.inputs.expiry_date }}"
+
+      - name: Upload backtest results
         uses: actions/upload-artifact@v4
         with:
-          name: simulator
-          path: simulator.html
+          name: backtest-${{ github.event.inputs.target_date }}
+          path: backtest_output/
+          retention-days: 90
