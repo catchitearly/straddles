@@ -461,25 +461,25 @@ def build_dashboard_html(straddle_data, atm, rankings):
 
     <div class="tab-content" id="tab-iv">
         <div class="metric-card">
-            {fig_iv.to_html(full_html=False, include_plotlyjs=False, div_id='ivChart', config={{'responsive': True}})}
+            {fig_iv.to_html(full_html=False, include_plotlyjs=False, div_id='ivChart', config={'responsive': True})}
         </div>
     </div>
 
     <div class="tab-content" id="tab-theta">
         <div class="metric-card">
-            {fig_theta.to_html(full_html=False, include_plotlyjs=False, div_id='thetaChart', config={{'responsive': True}})}
+            {fig_theta.to_html(full_html=False, include_plotlyjs=False, div_id='thetaChart', config={'responsive': True})}
         </div>
     </div>
 
     <div class="tab-content" id="tab-vega">
         <div class="metric-card">
-            {fig_vega.to_html(full_html=False, include_plotlyjs=False, div_id='vegaChart', config={{'responsive': True}})}
+            {fig_vega.to_html(full_html=False, include_plotlyjs=False, div_id='vegaChart', config={'responsive': True})}
         </div>
     </div>
 
     <div class="tab-content" id="tab-gamma">
         <div class="metric-card">
-            {fig_gamma.to_html(full_html=False, include_plotlyjs=False, div_id='gammaChart', config={{'responsive': True}})}
+            {fig_gamma.to_html(full_html=False, include_plotlyjs=False, div_id='gammaChart', config={'responsive': True})}
         </div>
     </div>
 
