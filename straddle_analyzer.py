@@ -27,6 +27,8 @@ RISK_FREE_RATE = 0.065  # Annualised risk-free rate used for Black-Scholes / IV 
 SPOT_SYMBOL = "NSE:NIFTY50-INDEX"
 STRIKE_STEP = 100  # Nifty weekly strikes are in steps of 50
 FALLBACK_ATM = 24300  # Used only if the spot fetch fails
+CANDLE_INTERVAL_MINUTES = 5  # Must match the "resolution" used in fetch_candles
+THETA_WINDOW_MINUTES = 15  # Trailing window for the "15 Min Theta" tab
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 
 OUTPUT_DIR = "output"
@@ -331,6 +333,7 @@ def build_dashboard_html(straddle_data, atm, rankings):
     fig_theta = _metric_figure(straddle_data, strikes, atm, "theta_total", "Theta (Straddle Total, ₹/day)", "Theta")
     fig_vega = _metric_figure(straddle_data, strikes, atm, "vega_total", "Vega (Straddle Total, per 1% IV)", "Vega")
     fig_gamma = _metric_figure(straddle_data, strikes, atm, "gamma_total", "Gamma (Straddle Total)", "Gamma")
+    fig_theta15 = _metric_figure(straddle_data, strikes, atm, "theta_15min", f"Theta Decay (Trailing {THETA_WINDOW_MINUTES} min, ₹)", "Theta (₹ / 15 min)")
 
     table_rows_html = "".join([
         f"""<tr style="border-bottom:1px solid {BORDER};">
@@ -425,6 +428,7 @@ def build_dashboard_html(straddle_data, atm, rankings):
         <button class="tab-btn" id="btn-theta" onclick="showTab('theta')">THETA</button>
         <button class="tab-btn" id="btn-vega" onclick="showTab('vega')">VEGA</button>
         <button class="tab-btn" id="btn-gamma" onclick="showTab('gamma')">GAMMA</button>
+        <button class="tab-btn" id="btn-theta15" onclick="showTab('theta15')">15 MIN THETA</button>
         <button class="tab-btn" id="btn-momentum" onclick="showTab('momentum')">MOMENTUM</button>
     </div>
 
@@ -482,6 +486,12 @@ def build_dashboard_html(straddle_data, atm, rankings):
     <div class="tab-content" id="tab-gamma">
         <div class="metric-card">
             {fig_gamma.to_html(full_html=False, include_plotlyjs=False, div_id='gammaChart', config={'responsive': True})}
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-theta15">
+        <div class="metric-card">
+            {fig_theta15.to_html(full_html=False, include_plotlyjs=False, div_id='theta15Chart', config={'responsive': True})}
         </div>
     </div>
 
@@ -590,7 +600,7 @@ def build_dashboard_html(straddle_data, atm, rankings):
     updateTable();
 
     // --- Tabs ---
-    const metricTabs = ['iv', 'theta', 'vega', 'gamma'];
+    const metricTabs = ['iv', 'theta', 'vega', 'gamma', 'theta15'];
     function showTab(name) {{
         document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
         document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
@@ -602,7 +612,7 @@ def build_dashboard_html(straddle_data, atm, rankings):
     document.getElementById('strikeToggleBar').style.display = 'none';
 
     // --- Strike toggle (shared across IV / Theta / Vega / Gamma tabs) ---
-    const metricChartIds = ['ivChart', 'thetaChart', 'vegaChart', 'gammaChart'];
+    const metricChartIds = ['ivChart', 'thetaChart', 'vegaChart', 'gammaChart', 'theta15Chart'];
     function toggleStrike(idx, checked) {{
         metricChartIds.forEach(id => {{
             const el = document.getElementById(id);
@@ -720,6 +730,13 @@ def main():
                     merged['gamma_total'] = 0.0
                     merged['vega_total'] = 0.0
                     merged['theta_total'] = 0.0
+
+                # Trailing 15-minute theta decay: theta_total is a per-calendar-day
+                # (annualised/365) figure, so scale it down to a per-candle (5-min)
+                # contribution, then take a rolling sum over the last 3 candles (15 min).
+                candles_per_window = THETA_WINDOW_MINUTES // CANDLE_INTERVAL_MINUTES
+                theta_per_candle = merged['theta_total'] * (CANDLE_INTERVAL_MINUTES / 1440.0)
+                merged['theta_15min'] = theta_per_candle.rolling(window=candles_per_window, min_periods=1).sum()
 
                 results[strike] = merged
                 successful_fetches += 1
