@@ -3,6 +3,7 @@ import math
 import json
 import logging
 import requests
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -20,25 +21,29 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 TARGET_DATE = os.getenv("TARGET_DATE") or datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
-EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26707")
-EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-07-07")
-EXPIRY_TIME = "15:30"
-RISK_FREE_RATE = 0.065
+EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26707")  # Update as needed (Fyers symbol expiry code)
+EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-07-07")  # Update as needed - actual calendar expiry date, must match EXPIRY above
+EXPIRY_TIME = "15:30"  # Market close time on expiry day
+RISK_FREE_RATE = 0.065  # Annualised risk-free rate used for Black-Scholes / IV solving
 SPOT_SYMBOL = "NSE:NIFTY50-INDEX"
-STRIKE_STEP = 100
-FALLBACK_ATM = 24300
-CANDLE_INTERVAL_MINUTES = 5
-THETA_WINDOW_MINUTES = 15
+STRIKE_STEP = 50  # Nifty weekly strikes are in steps of 50
+FALLBACK_ATM = 24300  # Used only if the spot fetch fails
+CANDLE_INTERVAL_MINUTES = 5  # Must match the "resolution" used in fetch_candles
+THETA_WINDOW_MINUTES = 15  # Trailing window for the "15 Min Theta" tab
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 
-# ── NEW ──────────────────────────────────────────────────────────────────────
-LOT_SIZE = 65          # Current Nifty lot size (as of Sep 2025 expiry revision)
-GEX_SCALE = 1e7        # Divide raw GEX by this → result in crores
-# ─────────────────────────────────────────────────────────────────────────────
+LOT_SIZE = 75  # Update to the current NIFTY lot size - used for GEX (rupee) scaling
+GEX_STRIKE_COUNT = 40  # Strikes fetched on each side of ATM from the Option Chain API for GEX
+GEX_SCALE = 1e7  # Display GEX in ₹ Crore (1e7) for readability
+GEX_SPOT_RANGE_POINTS = 1000  # How far above/below spot to scan when solving for the gamma flip
+GEX_SPOT_STEP = 25  # Grid step (points) for the flip scan
 
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs("docs", exist_ok=True)
+
+GEX_HISTORY_FILE = os.path.join(OUTPUT_DIR, f"gex_history_{TARGET_DATE}.json")
+GEX_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_history_{TARGET_DATE}.json")
 
 # Dashboard Styling
 BG = "#0b0f1a"
@@ -49,11 +54,8 @@ MUTED = "#64748b"
 ACCENT = "#00e5b0"
 BLUE = "#38bdf8"
 RED = "#ff4560"
-EMA_COLOR = "#fbbf24"
-GEX_GREEN = "#00e5b0"   # positive gamma / CE GEX
-GEX_RED   = "#ff4560"   # negative gamma / PE GEX
-GEX_FLIP  = "#fbbf24"   # flip level line
-STRIKE_COLORS = ["#38bdf8","#a78bfa","#f97316","#ff4560","#fbbf24","#00e5b0","#ec4899","#84cc16","#64748b"]
+EMA_COLOR = "#fbbf24"  # Yellow/amber for EMA9 line
+STRIKE_COLORS = ["#38bdf8", "#a78bfa", "#f97316", "#ff4560", "#fbbf24", "#00e5b0", "#ec4899", "#84cc16", "#64748b"]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -69,11 +71,17 @@ EXPIRY_DT = datetime.combine(
 # --- TELEGRAM ---
 
 def send_telegram_message(text):
+    """Send a text message via Telegram bot."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("Telegram credentials not set. Skipping message.")
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
     try:
         resp = requests.post(url, json=payload, timeout=15)
         resp.raise_for_status()
@@ -84,6 +92,7 @@ def send_telegram_message(text):
         return False
 
 def send_telegram_document(file_path, caption=""):
+    """Send an HTML file as a document via Telegram bot."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("Telegram credentials not set. Skipping document.")
         return False
@@ -104,13 +113,17 @@ def send_telegram_document(file_path, caption=""):
         return False
 
 def send_telegram_summary(rankings, atm, successful_fetches, total_strikes):
+    """Send a formatted summary of the analysis to Telegram."""
     trend_emoji = {"UP": "📈", "DOWN": "📉", "FLAT": "➡️"}
     medal = ["🥇", "🥈", "🥉"]
+
     lines = [
         f"<b>📊 STRADDLE ANALYSER — {TARGET_DATE}</b>",
         f"<code>ATM: {atm} | Strikes: {successful_fetches}/{total_strikes} | {RUN_TIMESTAMP}</code>",
-        "", "<b>🏆 SMOOTHNESS RANKINGS</b>",
+        "",
+        "<b>🏆 SMOOTHNESS RANKINGS</b>",
     ]
+
     for r in rankings:
         m = medal[r["rank"] - 1] if r["rank"] <= 3 else f"#{r['rank']}"
         atm_tag = " ◄ ATM" if r["strike"] == atm else ""
@@ -120,8 +133,15 @@ def send_telegram_summary(rankings, atm, successful_fetches, total_strikes):
             f"Smooth: <code>{r['smoothness']}%</code>  |  "
             f"Angle: <code>{r['angle']}°</code>  |  {emoji} {r['trend']}"
         )
+
+    # Highlight top pick
     top = rankings[0]
-    lines += ["", f"✅ <b>Best Strike:</b> {top['strike']} (Smoothness: {top['smoothness']}%)", f"📎 Full dashboard attached below."]
+    lines += [
+        "",
+        f"✅ <b>Best Strike:</b> {top['strike']} (Smoothness: {top['smoothness']}%)",
+        f"📎 Full dashboard attached below."
+    ]
+
     send_telegram_message("\n".join(lines))
 
 # --- ANALYTICS ---
@@ -144,6 +164,7 @@ def _trend(a):
     return "UP" if a > 5 else ("DOWN" if a < -5 else "FLAT")
 
 def compute_ema(prices, period=9):
+    """Compute EMA for a list/series of prices. Returns a list of floats (NaN for initial values)."""
     ema = pd.Series(prices).ewm(span=period, adjust=False).mean()
     return ema.tolist()
 
@@ -162,6 +183,7 @@ def compute_rankings(straddle_data):
 # --- OPTIONS PRICING: IV & GREEKS (Black-Scholes) ---
 
 def _time_to_expiry_years(candle_time):
+    """candle_time is a tz-naive Asia/Kolkata timestamp. Returns years to expiry (>=0)."""
     aware = candle_time.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
     seconds = (EXPIRY_DT - aware).total_seconds()
     if seconds <= 0:
@@ -183,6 +205,7 @@ def bs_price(S, K, T, r, sigma, opt_type):
     return K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
 
 def implied_vol(price, S, K, T, r, opt_type):
+    """Solve for IV using Brent's method. Returns NaN if it can't be solved."""
     if T <= 0 or price is None or price <= 0 or S <= 0 or K <= 0:
         return float("nan")
     intrinsic = max(S - K, 0.0) if opt_type == "CE" else max(K - S, 0.0)
@@ -199,7 +222,8 @@ def implied_vol(price, S, K, T, r, opt_type):
         return float("nan")
 
 def bs_gamma_vega(S, K, T, r, sigma):
-    if T <= 0 or sigma <= 0 or sigma != sigma:
+    """Gamma and Vega (per 1% IV move) - identical formula for calls and puts."""
+    if T <= 0 or sigma <= 0 or sigma != sigma:  # NaN check
         return 0.0, 0.0
     d1, _ = _bs_d1_d2(S, K, T, r, sigma)
     pdf = norm.pdf(d1)
@@ -208,6 +232,7 @@ def bs_gamma_vega(S, K, T, r, sigma):
     return gamma, vega
 
 def bs_theta(S, K, T, r, sigma, opt_type):
+    """Theta expressed per calendar day."""
     if T <= 0 or sigma <= 0 or sigma != sigma:
         return 0.0
     d1, d2 = _bs_d1_d2(S, K, T, r, sigma)
@@ -219,12 +244,12 @@ def bs_theta(S, K, T, r, sigma, opt_type):
     return annual / 365.0
 
 def compute_greeks_row(row, strike):
+    """Given a merged row (with spot, ce close, pe close, time), compute IV & Greeks for the straddle."""
     S = row.get("spot")
     t_years = _time_to_expiry_years(row["time"])
     if S is None or S != S or S <= 0:
         return pd.Series({
             "iv_ce": float("nan"), "iv_pe": float("nan"), "iv_pct": float("nan"),
-            "gamma_ce": 0.0, "gamma_pe": 0.0,          # ── NEW: individual gammas
             "gamma_total": 0.0, "vega_total": 0.0, "theta_total": 0.0
         })
 
@@ -236,205 +261,206 @@ def compute_greeks_row(row, strike):
     theta_ce = bs_theta(S, strike, t_years, RISK_FREE_RATE, iv_ce, "CE")
     theta_pe = bs_theta(S, strike, t_years, RISK_FREE_RATE, iv_pe, "PE")
 
-    ivs = [v for v in (iv_ce, iv_pe) if v == v]
+    ivs = [v for v in (iv_ce, iv_pe) if v == v]  # drop NaN
     iv_pct = (sum(ivs) / len(ivs) * 100.0) if ivs else float("nan")
 
     return pd.Series({
         "iv_ce": iv_ce, "iv_pe": iv_pe, "iv_pct": iv_pct,
-        "gamma_ce": gamma_ce if gamma_ce == gamma_ce else 0.0,   # ── NEW
-        "gamma_pe": gamma_pe if gamma_pe == gamma_pe else 0.0,   # ── NEW
         "gamma_total": (gamma_ce if gamma_ce == gamma_ce else 0.0) + (gamma_pe if gamma_pe == gamma_pe else 0.0),
-        "vega_total":  (vega_ce  if vega_ce  == vega_ce  else 0.0) + (vega_pe  if vega_pe  == vega_pe  else 0.0),
+        "vega_total": (vega_ce if vega_ce == vega_ce else 0.0) + (vega_pe if vega_pe == vega_pe else 0.0),
         "theta_total": (theta_ce if theta_ce == theta_ce else 0.0) + (theta_pe if theta_pe == theta_pe else 0.0),
     })
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# NEW — GEX (GAMMA EXPOSURE) ENGINE
-# ═══════════════════════════════════════════════════════════════════════════════
+# --- GAMMA EXPOSURE (GEX) & GAMMA FLIP ---
+#
+# GEX convention used here (the common retail/open-source convention - NOT the
+# only one in use, but the most widely seen): calls contribute POSITIVE gamma
+# exposure, puts contribute NEGATIVE. Net GEX > 0 is read as a "pinned" /
+# lower-realised-vol regime (dealers long gamma, dampen moves); Net GEX < 0 is
+# read as a "trending" / higher-realised-vol regime (dealers short gamma,
+# amplify moves). The Gamma Flip is the hypothetical spot level at which total
+# GEX (recomputed at that spot, holding today's OI and each strike's already
+# solved IV fixed) would cross zero.
+#
+# NOTE ON DATA SOURCE: Fyers' history() candle API has no Open Interest field.
+# OI only comes from the Option Chain endpoint (fyers.optionchain), which is a
+# live snapshot - there is no historical intraday OI series available. So GEX
+# can only be computed for "right now" each time this script runs; the GEX
+# tab's time series is built up by logging one point per run into a small
+# JSON file that must persist across runs (see GEX_HISTORY_FILE below - your
+# GitHub Actions workflow needs to commit this file back, the same way it
+# already must be committing docs/index.html for GitHub Pages).
+#
+# CAVEAT: I'm parsing fyers.optionchain()'s response based on the commonly
+# documented Fyers v3 schema, but I can't test this live. The parser below is
+# defensive and logs the raw response if the expected fields aren't found -
+# please sanity check that log line against your actual account once.
 
-def _safe_float(v):
-    """Return float or 0.0, never NaN."""
+def fetch_option_chain(fyers, strike_count=GEX_STRIKE_COUNT):
+    """Fetch a live option-chain snapshot (OI + LTP per strike) from Fyers.
+    Returns (chain_df, spot_price) or (None, None) on failure. chain_df has
+    one row per strike with columns: strike, ltp_ce, ltp_pe, oi_ce, oi_pe.
+    """
     try:
-        f = float(v)
-        return 0.0 if f != f else f
-    except Exception:
-        return 0.0
+        resp = fyers.optionchain(data={"symbol": SPOT_SYMBOL, "strikecount": strike_count, "timestamp": ""})
+    except Exception as e:
+        logger.error(f"Option chain fetch failed: {e}")
+        return None, None
 
-def compute_gex_all_candles(straddle_data):
+    if not isinstance(resp, dict) or resp.get("s") != "ok":
+        logger.error(f"Option chain error response: {resp}")
+        return None, None
+
+    chain = (resp.get("data") or {}).get("optionsChain") or []
+    if not chain:
+        logger.warning(f"Option chain returned no rows. Raw response (truncated): {json.dumps(resp)[:800]}")
+        return None, None
+
+    def _get(rec, *keys):
+        for k in keys:
+            if k in rec and rec[k] is not None:
+                return rec[k]
+        return None
+
+    spot_price = None
+    rows = []
+    for rec in chain:
+        opt_type = _get(rec, "option_type", "optionType", "opt_type")
+        if opt_type not in ("CE", "PE"):
+            # Usually the underlying index itself is included as a non-CE/PE row.
+            maybe_spot = _get(rec, "ltp", "lp")
+            if maybe_spot:
+                spot_price = maybe_spot
+            continue
+        strike = _get(rec, "strike_price", "strikePrice", "strike")
+        ltp = _get(rec, "ltp", "lp") or 0.0
+        oi = _get(rec, "oi", "openInterest") or 0
+        if strike is None:
+            continue
+        rows.append({"strike": strike, "option_type": opt_type, "ltp": ltp, "oi": oi})
+
+    if not rows:
+        logger.warning(f"Could not parse any option chain rows - schema mismatch. Sample records: {json.dumps(chain[:2])}")
+        return None, None
+
+    df = pd.DataFrame(rows)
+    pivot = df.pivot_table(index="strike", values=["ltp", "oi"], columns="option_type", aggfunc="first")
+    pivot.columns = [f"{val}_{opt.lower()}" for val, opt in pivot.columns]
+    pivot = pivot.reset_index()
+    for col in ["ltp_ce", "ltp_pe", "oi_ce", "oi_pe"]:
+        if col not in pivot.columns:
+            pivot[col] = np.nan
+
+    return pivot, spot_price
+
+def compute_gex_snapshot(chain_df, spot, as_of=None):
+    """Per-strike Gamma Exposure using our own BS gamma (IV solved from each
+    leg's live LTP). Returns chain_df with iv/gamma/gex columns added.
     """
-    Pre-compute GEX snapshots at every candle across all loaded strikes.
+    as_of = as_of or datetime.now(ZoneInfo("Asia/Kolkata"))
+    t_years = _time_to_expiry_years(as_of.replace(tzinfo=None))
 
-    GEX per strike per candle:
-        GEX_CE(K) = +gamma_CE(K) × OI_CE(K) × S² × LOT_SIZE   (positive — call side)
-        GEX_PE(K) = −gamma_PE(K) × OI_PE(K) × S² × LOT_SIZE   (negative — put side)
-        GEX_net(K) = GEX_CE(K) + GEX_PE(K)
+    records = []
+    for _, row in chain_df.iterrows():
+        strike = row["strike"]
+        iv_ce = implied_vol(row["ltp_ce"], spot, strike, t_years, RISK_FREE_RATE, "CE")
+        iv_pe = implied_vol(row["ltp_pe"], spot, strike, t_years, RISK_FREE_RATE, "PE")
+        gamma_ce, _ = bs_gamma_vega(spot, strike, t_years, RISK_FREE_RATE, iv_ce)
+        gamma_pe, _ = bs_gamma_vega(spot, strike, t_years, RISK_FREE_RATE, iv_pe)
 
-    Gamma Flip Level: strike where cumulative net GEX (low→high) changes sign.
-    Above flip → positive gamma regime (MM long gamma → mean-revert).
-    Below flip → negative gamma regime (MM short gamma → trend / vol expansion).
+        oi_ce = row["oi_ce"] if row["oi_ce"] == row["oi_ce"] else 0.0
+        oi_pe = row["oi_pe"] if row["oi_pe"] == row["oi_pe"] else 0.0
 
-    Returns a list of dicts (one per candle), each containing:
-        time, spot, flip_level, total_net_gex,
-        gex_ce[]  (one value per strike, ₹Cr),
-        gex_pe[]  (one value per strike, ₹Cr),
-        gex_net[] (one value per strike, ₹Cr),
+        gex_ce = gamma_ce * oi_ce * LOT_SIZE * spot ** 2 * 0.01
+        gex_pe = -gamma_pe * oi_pe * LOT_SIZE * spot ** 2 * 0.01
 
-    NOTE: OI comes from the 7th column of Fyers F&O history candles (oi_ce /
-    oi_pe fields set by fetch_and_enrich_strike). If the broker returns zero OI
-    for every bar the GEX chart will be flat — in that case verify that
-    Fyers history is returning the OI column for the selected instrument.
-    """
-    strikes = sorted(straddle_data.keys())
-    ref_df  = straddle_data[strikes[0]]
-    n_candles = len(ref_df)
-
-    snapshots = []
-
-    for t_idx in range(n_candles):
-        snap_time = ref_df.iloc[t_idx]["time"]
-        t_str     = snap_time.strftime("%H:%M")
-        t_years   = _time_to_expiry_years(snap_time)
-
-        gex_ce_list  = []
-        gex_pe_list  = []
-        spot_val     = None
-
-        for strike in strikes:
-            df = straddle_data[strike]
-            if t_idx >= len(df):
-                gex_ce_list.append(0.0)
-                gex_pe_list.append(0.0)
-                continue
-
-            row    = df.iloc[t_idx]
-            S      = _safe_float(row.get("spot", 0))
-            if S > 0 and spot_val is None:
-                spot_val = S
-
-            if S <= 0:
-                gex_ce_list.append(0.0)
-                gex_pe_list.append(0.0)
-                continue
-
-            # Use pre-computed individual gammas (fall back to 0 if column absent)
-            # gamma_ce/gamma_pe are set by compute_greeks_row; oi_ce/oi_pe by fetch_candles.
-            # pandas Series.get() returns None for missing keys — _safe_float converts to 0.0.
-            gamma_ce = _safe_float(row.get("gamma_ce") if "gamma_ce" in row.index else 0.0)
-            gamma_pe = _safe_float(row.get("gamma_pe") if "gamma_pe" in row.index else 0.0)
-            oi_ce    = _safe_float(row.get("oi_ce")    if "oi_ce"    in row.index else 0.0)
-            oi_pe    = _safe_float(row.get("oi_pe")    if "oi_pe"    in row.index else 0.0)
-
-            scale = (S ** 2) * LOT_SIZE / GEX_SCALE   # units: ₹ Crore
-            gex_ce_list.append(round( gamma_ce * oi_ce * scale, 4))
-            gex_pe_list.append(round(-gamma_pe * oi_pe * scale, 4))
-
-        gex_net   = [round(c + p, 4) for c, p in zip(gex_ce_list, gex_pe_list)]
-        total_net = round(sum(gex_net), 4)
-
-        # ── Gamma Flip Level ─────────────────────────────────────────────────
-        # Walk cumulative net GEX from the lowest strike to highest.
-        # The flip is where the running sum crosses zero.
-        flip_level = None
-        cumulative  = 0.0
-        for i, (s, g) in enumerate(zip(strikes, gex_net)):
-            prev_cum   = cumulative
-            cumulative += g
-            if i > 0 and prev_cum != 0.0 and (prev_cum * cumulative) <= 0.0:
-                denom = abs(prev_cum) + abs(cumulative)
-                frac  = abs(prev_cum) / denom if denom > 0 else 0.5
-                flip_level = round(strikes[i - 1] + frac * (s - strikes[i - 1]), 1)
-                break
-        # ─────────────────────────────────────────────────────────────────────
-
-        snapshots.append({
-            "time":          t_str,
-            "spot":          round(spot_val, 2) if spot_val else None,
-            "flip_level":    flip_level,
-            "total_net_gex": total_net,
-            "gex_ce":        gex_ce_list,
-            "gex_pe":        gex_pe_list,
-            "gex_net":       gex_net,
+        records.append({
+            "strike": strike, "oi_ce": oi_ce, "oi_pe": oi_pe,
+            "iv_ce": iv_ce, "iv_pe": iv_pe,
+            "gamma_ce": gamma_ce, "gamma_pe": gamma_pe,
+            "gex_ce": gex_ce, "gex_pe": gex_pe, "gex_net": gex_ce + gex_pe,
         })
 
-    return snapshots
+    return pd.DataFrame(records)
 
-
-def build_gex_timeseries_figure(gex_snapshots):
+def compute_gamma_flip(gex_df, spot, as_of=None):
+    """Scan a grid of hypothetical spot levels around the current spot,
+    recomputing gamma at each level (holding OI and each strike's already-
+    solved IV fixed), and find where total GEX crosses zero via interpolation.
+    Returns (flip_level_or_None, [(spot, total_gex), ...]).
     """
-    Static Plotly figure with two sub-panels:
-      Row 1 — Nifty Spot (blue) vs Gamma Flip Level (amber dashed)
-      Row 2 — Total Net GEX bar chart (green above zero / red below)
+    as_of = as_of or datetime.now(ZoneInfo("Asia/Kolkata"))
+    t_years = _time_to_expiry_years(as_of.replace(tzinfo=None))
+
+    grid = np.arange(spot - GEX_SPOT_RANGE_POINTS, spot + GEX_SPOT_RANGE_POINTS + GEX_SPOT_STEP, GEX_SPOT_STEP)
+    totals = []
+    for s_hyp in grid:
+        total = 0.0
+        for _, row in gex_df.iterrows():
+            strike = row["strike"]
+            if row["iv_ce"] == row["iv_ce"]:
+                g_ce, _ = bs_gamma_vega(s_hyp, strike, t_years, RISK_FREE_RATE, row["iv_ce"])
+                total += g_ce * row["oi_ce"] * LOT_SIZE * s_hyp ** 2 * 0.01
+            if row["iv_pe"] == row["iv_pe"]:
+                g_pe, _ = bs_gamma_vega(s_hyp, strike, t_years, RISK_FREE_RATE, row["iv_pe"])
+                total -= g_pe * row["oi_pe"] * LOT_SIZE * s_hyp ** 2 * 0.01
+        totals.append(total)
+
+    totals = np.array(totals)
+    flip = None
+    for i in range(len(totals) - 1):
+        if totals[i] == 0:
+            flip = float(grid[i])
+            break
+        if totals[i] * totals[i + 1] < 0:
+            frac = totals[i] / (totals[i] - totals[i + 1])
+            flip = float(grid[i] + frac * (grid[i + 1] - grid[i]))
+            break
+
+    return flip, list(zip(grid.tolist(), totals.tolist()))
+
+def load_gex_history():
+    path = GEX_HISTORY_DOCS_FILE if os.path.exists(GEX_HISTORY_DOCS_FILE) else GEX_HISTORY_FILE
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Could not read GEX history ({path}): {e}")
+    return []
+
+def save_gex_history(history):
+    for path in (GEX_HISTORY_FILE, GEX_HISTORY_DOCS_FILE):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(history, f)
+        except Exception as e:
+            logger.warning(f"Could not write GEX history ({path}): {e}")
+
+def update_gex_and_get_history(fyers, fallback_spot):
+    """Fetch a fresh option-chain snapshot, compute GEX + flip, append it to
+    the persisted history log, and return the full day's history so far
+    (list of dicts: time, spot, net_gex, flip). Never raises - logs and
+    falls back to returning whatever history already exists on failure.
     """
-    times     = [s["time"]          for s in gex_snapshots]
-    spots     = [s["spot"]          for s in gex_snapshots]
-    flips     = [s["flip_level"]    for s in gex_snapshots]
-    net_gex   = [s["total_net_gex"] for s in gex_snapshots]
-
-    bar_colors = [GEX_GREEN if v >= 0 else GEX_RED for v in net_gex]
-
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        subplot_titles=["Nifty Spot  vs  Gamma Flip Level", "Net GEX  (₹ Cr)"],
-        vertical_spacing=0.10,
-        row_heights=[0.60, 0.40],
-    )
-
-    # Spot
-    fig.add_trace(go.Scatter(
-        x=times, y=spots, name="Nifty Spot",
-        line=dict(color=BLUE, width=2.5),
-        hovertemplate="Time: %{x}<br>Spot: %{y:.0f}<extra></extra>",
-    ), row=1, col=1)
-
-    # Flip level
-    fig.add_trace(go.Scatter(
-        x=times, y=flips, name="Flip Level",
-        line=dict(color=GEX_FLIP, width=2, dash="dash"),
-        connectgaps=True,
-        hovertemplate="Time: %{x}<br>Flip: %{y:.1f}<extra></extra>",
-    ), row=1, col=1)
-
-    # Shaded gap between spot & flip to highlight regime
-    # (filled area — spot above flip = green tint, below = red tint)
-    # We add two separate fills: spot above and spot below
-    fig.add_trace(go.Scatter(
-        x=times + times[::-1],
-        y=spots + flips[::-1],
-        fill="toself",
-        fillcolor="rgba(0,229,176,0.06)",
-        line=dict(color="rgba(0,0,0,0)"),
-        showlegend=False, hoverinfo="skip",
-        name="_fill",
-    ), row=1, col=1)
-
-    # Net GEX bars
-    fig.add_trace(go.Bar(
-        x=times, y=net_gex, name="Net GEX",
-        marker_color=bar_colors,
-        hovertemplate="Time: %{x}<br>Net GEX: %{y:.2f} Cr<extra></extra>",
-    ), row=2, col=1)
-
-    # Zero line
-    fig.add_hline(y=0, line_color=MUTED, line_dash="dot", line_width=1, row=2, col=1)
-
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor=CARD, plot_bgcolor=CARD,
-        height=550,
-        margin=dict(l=10, r=10, t=40, b=10),
-        legend=dict(orientation="h", y=-0.05),
-        hovermode="x unified",
-    )
-    fig.update_yaxes(title_text="Price (₹)", row=1, col=1)
-    fig.update_yaxes(title_text="GEX (₹ Cr)", row=2, col=1)
-
-    return fig
+    history = load_gex_history()
+    try:
+        chain_df, chain_spot = fetch_option_chain(fyers)
+        spot = chain_spot or fallback_spot
+        if chain_df is not None and spot:
+            gex_df = compute_gex_snapshot(chain_df, spot)
+            net_gex = float(gex_df["gex_net"].sum())
+            flip, _curve = compute_gamma_flip(gex_df, spot)
+            history.append({"time": RUN_TIMESTAMP, "spot": float(spot), "net_gex": net_gex, "flip": flip})
+            save_gex_history(history)
+            logger.info(f"✓ GEX snapshot: spot={spot:.1f} net_gex={net_gex/GEX_SCALE:.2f} Cr flip={flip}")
+        else:
+            logger.warning("Skipping GEX snapshot this run (no option chain / spot available).")
+    except Exception as e:
+        logger.error(f"GEX computation failed: {e}", exc_info=True)
+    return history
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# DASHBOARD BUILDER
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def _metric_figure(straddle_data, strikes, atm, column, title, yaxis_title):
     fig = go.Figure()
@@ -453,58 +479,9 @@ def _metric_figure(straddle_data, strikes, atm, column, title, yaxis_title):
     )
     return fig
 
-
-def build_dashboard_html(straddle_data, atm, rankings):
+def build_dashboard_html(straddle_data, atm, rankings, gex_history=None):
     strikes = sorted(straddle_data.keys())
-
-    # ── Pre-compute GEX data (wrapped so a failure never kills the dashboard) ──
-    logger.info("Computing GEX data for all candles…")
-    _gex_error_msg = ""
-    try:
-        gex_snapshots = compute_gex_all_candles(straddle_data)
-        logger.info(f"✓ GEX computed: {len(gex_snapshots)} candle snapshots")
-        fig_gex_ts    = build_gex_timeseries_figure(gex_snapshots)
-
-        last_snap      = gex_snapshots[-1]
-        last_spot      = last_snap.get("spot") or 0
-        last_flip      = last_snap.get("flip_level")
-        last_total_gex = last_snap.get("total_net_gex", 0)
-
-        if last_flip is not None:
-            gamma_regime       = "POSITIVE GAMMA" if last_spot >= last_flip else "NEGATIVE GAMMA"
-            gamma_regime_color = GEX_GREEN         if last_spot >= last_flip else GEX_RED
-            gamma_regime_tip   = ("Market makers are LONG gamma → expect mean-reversion / range-bound action."
-                                  if last_spot >= last_flip else
-                                  "Market makers are SHORT gamma → expect trending / volatile moves.")
-            flip_display       = f"{last_flip:.0f}"
-        else:
-            gamma_regime, gamma_regime_color = "UNKNOWN", MUTED
-            gamma_regime_tip   = "Flip level could not be determined (check OI data)."
-            flip_display       = "N/A"
-
-    except Exception as _gex_exc:
-        logger.error(f"GEX computation failed (tab will show error): {_gex_exc}", exc_info=True)
-        _gex_error_msg    = str(_gex_exc)
-        # Build empty fallback structures so the rest of the HTML renders fine
-        ref_df            = straddle_data[sorted(straddle_data.keys())[0]]
-        gex_snapshots     = [
-            {"time": row["time"].strftime("%H:%M"), "spot": None, "flip_level": None,
-             "total_net_gex": 0.0, "gex_ce": [0.0]*len(strikes),
-             "gex_pe": [0.0]*len(strikes), "gex_net": [0.0]*len(strikes)}
-            for _, row in ref_df.iterrows()
-        ]
-        fig_gex_ts         = go.Figure()
-        fig_gex_ts.update_layout(
-            template="plotly_dark", paper_bgcolor=CARD, plot_bgcolor=CARD, height=400,
-            annotations=[dict(text=f"GEX unavailable: {_gex_error_msg}",
-                              x=0.5, y=0.5, xref="paper", yref="paper",
-                              showarrow=False, font=dict(color=RED, size=13))]
-        )
-        last_spot, last_flip, last_total_gex = 0, None, 0.0
-        gamma_regime, gamma_regime_color     = "ERROR", RED
-        gamma_regime_tip                     = f"GEX failed: {_gex_error_msg}"
-        flip_display                         = "ERR"
-    # ─────────────────────────────────────────────────────────────────────────
+    gex_history = gex_history or []
 
     fig_main = make_subplots(
         rows=len(strikes), cols=1,
@@ -513,15 +490,25 @@ def build_dashboard_html(straddle_data, atm, rankings):
         subplot_titles=[f"Strike {s}{' ◄ ATM' if s == atm else ''}" for s in strikes]
     )
     for idx, strike in enumerate(strikes):
-        df    = straddle_data[strike]
+        df = straddle_data[strike]
         color = STRIKE_COLORS[idx % len(STRIKE_COLORS)]
-        row   = idx + 1
-        fig_main.add_trace(go.Scatter(x=df["time"], y=df["straddle"], name=f"{strike}",
-                                       line=dict(color=color, width=2)), row=row, col=1)
-        fig_main.add_trace(go.Scatter(x=df["time"], y=df["vwap"],     name="VWAP",
-                                       line=dict(color=MUTED, width=1, dash="dot")), row=row, col=1)
-        fig_main.add_trace(go.Scatter(x=df["time"], y=df["ema9"],     name="EMA9",
-                                       line=dict(color=EMA_COLOR, width=1.5, dash="dash")), row=row, col=1)
+        row = idx + 1
+
+        fig_main.add_trace(go.Scatter(
+            x=df["time"], y=df["straddle"], name=f"{strike}",
+            line=dict(color=color, width=2)
+        ), row=row, col=1)
+
+        fig_main.add_trace(go.Scatter(
+            x=df["time"], y=df["vwap"], name="VWAP",
+            line=dict(color=MUTED, width=1, dash="dot")
+        ), row=row, col=1)
+
+        fig_main.add_trace(go.Scatter(
+            x=df["time"], y=df["ema9"], name="EMA9",
+            line=dict(color=EMA_COLOR, width=1.5, dash="dash")
+        ), row=row, col=1)
+
     fig_main.update_layout(height=200 * len(strikes), template="plotly_dark",
                             paper_bgcolor=BG, plot_bgcolor=BG, showlegend=False)
 
@@ -540,11 +527,48 @@ def build_dashboard_html(straddle_data, atm, rankings):
         yaxis=dict(autorange="reversed"), xaxis=dict(range=[0, 110])
     )
 
-    fig_iv      = _metric_figure(straddle_data, strikes, atm, "iv_pct",      "Implied Volatility (Straddle Avg)", "IV (%)")
-    fig_theta   = _metric_figure(straddle_data, strikes, atm, "theta_total", "Theta (Straddle Total, ₹/day)",     "Theta")
-    fig_vega    = _metric_figure(straddle_data, strikes, atm, "vega_total",  "Vega (Straddle Total, per 1% IV)",  "Vega")
-    fig_gamma   = _metric_figure(straddle_data, strikes, atm, "gamma_total", "Gamma (Straddle Total)",            "Gamma")
+    # Greek figures - one trace per strike, in the SAME strike order so trace
+    # indices line up across charts for the strike toggle checkboxes.
+    fig_iv = _metric_figure(straddle_data, strikes, atm, "iv_pct", "Implied Volatility (Straddle Avg)", "IV (%)")
+    fig_theta = _metric_figure(straddle_data, strikes, atm, "theta_total", "Theta (Straddle Total, ₹/day)", "Theta")
+    fig_vega = _metric_figure(straddle_data, strikes, atm, "vega_total", "Vega (Straddle Total, per 1% IV)", "Vega")
+    fig_gamma = _metric_figure(straddle_data, strikes, atm, "gamma_total", "Gamma (Straddle Total)", "Gamma")
     fig_theta15 = _metric_figure(straddle_data, strikes, atm, "theta_15min", f"Theta Decay (Trailing {THETA_WINDOW_MINUTES} min, ₹)", "Theta (₹ / 15 min)")
+
+    # --- GEX chart: NIFTY spot + gamma flip level (price axis) and Net GEX (secondary axis) ---
+    # Only has data from whenever this feature started running (OI has no history via the API).
+    fig_gex = make_subplots(specs=[[{"secondary_y": True}]])
+    if gex_history:
+        gex_times = [h["time"] for h in gex_history]
+        gex_spots = [h["spot"] for h in gex_history]
+        gex_flips = [h["flip"] for h in gex_history]
+        gex_nets = [h["net_gex"] / GEX_SCALE if h["net_gex"] is not None else None for h in gex_history]
+
+        fig_gex.add_trace(go.Scatter(
+            x=gex_times, y=gex_spots, name="NIFTY Spot",
+            line=dict(color=BLUE, width=2)
+        ), secondary_y=False)
+        fig_gex.add_trace(go.Scatter(
+            x=gex_times, y=gex_flips, name="Gamma Flip Level",
+            line=dict(color=ACCENT, width=2, dash="dash")
+        ), secondary_y=False)
+        fig_gex.add_trace(go.Scatter(
+            x=gex_times, y=gex_nets, name="Net GEX (₹ Cr)",
+            line=dict(color=RED, width=2), fill="tozeroy", fillcolor="rgba(255,69,96,0.08)"
+        ), secondary_y=True)
+        fig_gex.add_trace(go.Scatter(
+            x=gex_times, y=[0] * len(gex_times), name="Zero GEX",
+            line=dict(color=MUTED, width=1, dash="dot"), showlegend=False
+        ), secondary_y=True)
+
+    fig_gex.update_layout(
+        title="NIFTY Spot vs Gamma Flip Level  |  Net GEX (₹ Cr)",
+        template="plotly_dark", paper_bgcolor=CARD, plot_bgcolor=CARD,
+        height=520, margin=dict(l=10, r=10, t=50, b=10),
+        legend=dict(orientation="h", y=-0.15)
+    )
+    fig_gex.update_yaxes(title_text="NIFTY Price", secondary_y=False)
+    fig_gex.update_yaxes(title_text="Net GEX (₹ Cr)", secondary_y=True)
 
     table_rows_html = "".join([
         f"""<tr style="border-bottom:1px solid {BORDER};">
@@ -559,8 +583,9 @@ def build_dashboard_html(straddle_data, atm, rankings):
     speed_data = {str(strike): [{"time": row["time"].strftime("%H:%M"), "price": round(row["straddle"], 2)}
                   for _, row in df.iterrows()] for strike, df in straddle_data.items()}
     ref_strike = list(speed_data.keys())[0]
-    all_times  = [d["time"] for d in speed_data[ref_strike]]
+    all_times = [d["time"] for d in speed_data[ref_strike]]
 
+    # Strike toggle checkboxes (shared across the IV / Theta / Vega / Gamma tabs)
     toggle_items_html = "".join([
         f"""<label class="toggle-item">
             <input type="checkbox" checked onchange="toggleStrike({idx}, this.checked)">
@@ -569,32 +594,12 @@ def build_dashboard_html(straddle_data, atm, rankings):
         </label>""" for idx, strike in enumerate(strikes)
     ])
 
-    # ── GEX bar-chart summary rows (last snapshot) ────────────────────────────
-    _last = gex_snapshots[-1]
-    if _gex_error_msg:
-        gex_table_rows = f'<tr><td colspan="4" style="padding:12px;color:{RED};">GEX failed — {_gex_error_msg}</td></tr>'
-    else:
-        gex_table_rows = "".join([
-            f"""<tr style="border-bottom:1px solid {BORDER};">
-                <td style="padding:8px;color:{STRIKE_COLORS[i % len(STRIKE_COLORS)]};"><b>{strike}</b>
-                    {' <small style="color:' + ACCENT + '">ATM</small>' if strike == atm else ''}</td>
-                <td style="padding:8px;color:{GEX_GREEN};">{_last['gex_ce'][i]:+.3f}</td>
-                <td style="padding:8px;color:{GEX_RED};">{_last['gex_pe'][i]:+.3f}</td>
-                <td style="padding:8px;color:{GEX_GREEN if _last['gex_net'][i]>=0 else GEX_RED};font-weight:bold;">{_last['gex_net'][i]:+.3f}</td>
-            </tr>""" for i, strike in enumerate(strikes)
-        ])
-
-    # ── Embed GEX snapshots as JSON for the interactive JS bar chart ──────────
-    gex_json = json.dumps(gex_snapshots)
-    strikes_json = json.dumps([str(s) for s in strikes])
-
-    _pcfg = {"responsive": True}   # plotly config — must NOT be inline in f-string
     final_html = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="refresh" content="300">
-    <title>Straddle Dashboard — {TARGET_DATE}</title>
+    <title>Straddle Dashboard - {TARGET_DATE}</title>
     <style>
         * {{ box-sizing: border-box; }}
         body {{ background-color: {BG}; color: {TEXT}; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 0; }}
@@ -638,38 +643,11 @@ def build_dashboard_html(straddle_data, atm, rankings):
         .toggle-item {{ display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: {TEXT}; cursor: pointer; user-select: none; }}
         .toggle-item input {{ accent-color: {ACCENT}; cursor: pointer; }}
         .metric-card {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; padding: 20px; margin: 20px; }}
-
-        /* ── GEX-specific styles ── */
-        .gex-outer {{ padding: 20px; }}
-        .gex-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }}
-        @media (max-width: 1100px) {{ .gex-grid {{ grid-template-columns: 1fr; }} }}
-        .gex-regime-banner {{
-            border-radius: 8px; padding: 16px 24px; margin-bottom: 20px;
-            display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
-            border: 1px solid;
-        }}
-        .regime-badge {{
-            font-size: 18px; font-weight: 900; letter-spacing: 2px; padding: 6px 16px;
-            border-radius: 6px;
-        }}
-        .gex-stat {{ display: flex; flex-direction: column; gap: 2px; }}
-        .gex-stat-label {{ font-size: 10px; color: {MUTED}; text-transform: uppercase; letter-spacing: 1px; }}
-        .gex-stat-value {{ font-size: 16px; font-weight: bold; }}
-        .gex-bar-card {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; padding: 20px; }}
-        .gex-ts-card  {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; padding: 20px; }}
-        .gex-table-card {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; padding: 20px; margin-bottom: 20px; }}
-        .gex-slider-row {{ display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }}
-        #gexTimeVal {{ font-size: 16px; font-weight: bold; color: {ACCENT}; min-width: 50px; }}
-        #gexSpotVal {{ font-size: 13px; color: {BLUE}; }}
-        #gexFlipVal {{ font-size: 13px; color: {GEX_FLIP}; }}
-        #gexNetVal  {{ font-size: 13px; font-weight: bold; }}
-
         @media (max-width: 768px) {{
             .content {{ flex-direction: column; }}
             .sidebar, .main-charts {{ min-width: auto; }}
             .speed-controls {{ flex-direction: column; align-items: flex-start; }}
             input[type=range] {{ width: 100%; }}
-            .gex-grid {{ grid-template-columns: 1fr; }}
         }}
     </style>
 </head>
@@ -680,21 +658,20 @@ def build_dashboard_html(straddle_data, atm, rankings):
     </div>
 
     <div class="tabs">
-        <button class="tab-btn active" id="btn-overview"  onclick="showTab('overview')">OVERVIEW</button>
-        <button class="tab-btn"        id="btn-iv"        onclick="showTab('iv')">IMPLIED VOL</button>
-        <button class="tab-btn"        id="btn-theta"     onclick="showTab('theta')">THETA</button>
-        <button class="tab-btn"        id="btn-vega"      onclick="showTab('vega')">VEGA</button>
-        <button class="tab-btn"        id="btn-gamma"     onclick="showTab('gamma')">GAMMA</button>
-        <button class="tab-btn"        id="btn-theta15"   onclick="showTab('theta15')">15 MIN THETA</button>
-        <button class="tab-btn"        id="btn-gex"       onclick="showTab('gex')" style="color:#fbbf24;">⚡ GEX</button>
-        <button class="tab-btn"        id="btn-momentum"  onclick="showTab('momentum')">MOMENTUM</button>
+        <button class="tab-btn active" id="btn-overview" onclick="showTab('overview')">OVERVIEW</button>
+        <button class="tab-btn" id="btn-iv" onclick="showTab('iv')">IMPLIED VOL</button>
+        <button class="tab-btn" id="btn-theta" onclick="showTab('theta')">THETA</button>
+        <button class="tab-btn" id="btn-vega" onclick="showTab('vega')">VEGA</button>
+        <button class="tab-btn" id="btn-gamma" onclick="showTab('gamma')">GAMMA</button>
+        <button class="tab-btn" id="btn-theta15" onclick="showTab('theta15')">15 MIN THETA</button>
+        <button class="tab-btn" id="btn-gex" onclick="showTab('gex')">GEX &amp; FLIP</button>
+        <button class="tab-btn" id="btn-momentum" onclick="showTab('momentum')">MOMENTUM</button>
     </div>
 
     <div class="toggle-bar" id="strikeToggleBar">
         {toggle_items_html}
     </div>
 
-    <!-- ════════ OVERVIEW TAB ════════ -->
     <div class="tab-content active" id="tab-overview">
         <div class="content">
             <div class="sidebar">
@@ -724,118 +701,47 @@ def build_dashboard_html(straddle_data, atm, rankings):
         </div>
     </div>
 
-    <!-- ════════ IV / THETA / VEGA / GAMMA / THETA15 TABS ════════ -->
     <div class="tab-content" id="tab-iv">
-        <div class="metric-card">{fig_iv.to_html(full_html=False, include_plotlyjs=False, div_id='ivChart', config=_pcfg)}</div>
-    </div>
-    <div class="tab-content" id="tab-theta">
-        <div class="metric-card">{fig_theta.to_html(full_html=False, include_plotlyjs=False, div_id='thetaChart', config=_pcfg)}</div>
-    </div>
-    <div class="tab-content" id="tab-vega">
-        <div class="metric-card">{fig_vega.to_html(full_html=False, include_plotlyjs=False, div_id='vegaChart', config=_pcfg)}</div>
-    </div>
-    <div class="tab-content" id="tab-gamma">
-        <div class="metric-card">{fig_gamma.to_html(full_html=False, include_plotlyjs=False, div_id='gammaChart', config=_pcfg)}</div>
-    </div>
-    <div class="tab-content" id="tab-theta15">
-        <div class="metric-card">{fig_theta15.to_html(full_html=False, include_plotlyjs=False, div_id='theta15Chart', config=_pcfg)}</div>
-    </div>
-
-    <!-- ════════════════════════════════════════════════════════════
-         GEX TAB
-         ════════════════════════════════════════════════════════════ -->
-    <div class="tab-content" id="tab-gex">
-        <div class="gex-outer">
-
-            <!-- Regime Banner -->
-            <div class="gex-regime-banner"
-                 style="background:{gamma_regime_color}11; border-color:{gamma_regime_color}44;">
-                <div class="regime-badge"
-                     style="background:{gamma_regime_color}22; color:{gamma_regime_color};">
-                    {gamma_regime}
-                </div>
-                <div class="gex-stat">
-                    <span class="gex-stat-label">Gamma Flip Level</span>
-                    <span class="gex-stat-value" style="color:{GEX_FLIP};">{flip_display}</span>
-                </div>
-                <div class="gex-stat">
-                    <span class="gex-stat-label">Nifty Spot (last bar)</span>
-                    <span class="gex-stat-value" style="color:{BLUE};">{last_spot:.0f}</span>
-                </div>
-                <div class="gex-stat">
-                    <span class="gex-stat-label">Net GEX (₹ Cr)</span>
-                    <span class="gex-stat-value"
-                          style="color:{GEX_GREEN if last_total_gex>=0 else GEX_RED};">
-                        {last_total_gex:+.2f}
-                    </span>
-                </div>
-                <div style="flex:1; min-width:200px; font-size:12px; color:{MUTED}; border-left:1px solid {BORDER}; padding-left:20px;">
-                    {gamma_regime_tip}
-                </div>
-            </div>
-
-            <!-- Two-column: GEX Profile (interactive) | Spot vs Flip (static) -->
-            <div class="gex-grid">
-
-                <!-- Left: Interactive GEX Profile bar chart -->
-                <div class="gex-bar-card">
-                    <h2>GEX PROFILE BY STRIKE</h2>
-                    <div class="gex-slider-row">
-                        <div class="slider-group">
-                            <div class="slider-label">Select Time</div>
-                            <input type="range" id="gexSlider" min="0" max="1" value="0" step="1" style="width:260px;">
-                        </div>
-                        <div>
-                            <span id="gexTimeVal">--:--</span>
-                            &nbsp;|&nbsp; Spot: <span id="gexSpotVal">--</span>
-                            &nbsp;|&nbsp; Flip: <span id="gexFlipVal">--</span>
-                            &nbsp;|&nbsp; Net GEX: <span id="gexNetVal">--</span>
-                        </div>
-                    </div>
-                    <div id="gexBarDiv" style="width:100%;height:420px;"></div>
-                    <div style="margin-top:10px;font-size:11px;color:{MUTED};">
-                        <span style="color:{GEX_GREEN};">■</span> CE GEX (positive, dealer short call hedge)&nbsp;&nbsp;
-                        <span style="color:{GEX_RED};">■</span> PE GEX (negative, dealer long put hedge)&nbsp;&nbsp;
-                        <span style="color:{TEXT};">◆</span> Net GEX per strike
-                    </div>
-                </div>
-
-                <!-- Right: Spot vs Flip Level + Net GEX time series (static Plotly) -->
-                <div class="gex-ts-card">
-                    <h2>NIFTY SPOT vs FLIP LEVEL  ·  NET GEX TIMELINE</h2>
-                    {fig_gex_ts.to_html(full_html=False, include_plotlyjs=False, div_id='gexTsChart', config=_pcfg)}
-                </div>
-
-            </div>
-
-            <!-- GEX summary table (last snapshot) -->
-            <div class="gex-table-card">
-                <h2>GEX BY STRIKE — LAST CANDLE SNAPSHOT (₹ Cr)</h2>
-                <div style="overflow-x:auto;">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Strike</th>
-                                <th style="color:{GEX_GREEN};">CE GEX</th>
-                                <th style="color:{GEX_RED};">PE GEX</th>
-                                <th>Net GEX</th>
-                            </tr>
-                        </thead>
-                        <tbody>{gex_table_rows}</tbody>
-                    </table>
-                </div>
-                <div style="margin-top:12px;font-size:11px;color:{MUTED};">
-                    Units: ₹ Crore &nbsp;·&nbsp; Lot size: {LOT_SIZE} &nbsp;·&nbsp;
-                    Formula: Gamma × OI × S² × {LOT_SIZE} ÷ 10⁷ &nbsp;·&nbsp;
-                    Zero OI values → check Fyers history returns OI column for F&O symbols.
-                </div>
-            </div>
-
+        <div class="metric-card">
+            {fig_iv.to_html(full_html=False, include_plotlyjs=False, div_id='ivChart', config={'responsive': True})}
         </div>
     </div>
-    <!-- ── end GEX tab ────────────────────────────────────────────────────── -->
 
-    <!-- ════════ MOMENTUM TAB ════════ -->
+    <div class="tab-content" id="tab-theta">
+        <div class="metric-card">
+            {fig_theta.to_html(full_html=False, include_plotlyjs=False, div_id='thetaChart', config={'responsive': True})}
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-vega">
+        <div class="metric-card">
+            {fig_vega.to_html(full_html=False, include_plotlyjs=False, div_id='vegaChart', config={'responsive': True})}
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-gamma">
+        <div class="metric-card">
+            {fig_gamma.to_html(full_html=False, include_plotlyjs=False, div_id='gammaChart', config={'responsive': True})}
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-theta15">
+        <div class="metric-card">
+            {fig_theta15.to_html(full_html=False, include_plotlyjs=False, div_id='theta15Chart', config={'responsive': True})}
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-gex">
+        <div class="metric-card">
+            <div style="color:{MUTED};font-size:12px;margin-bottom:12px;">
+                Net GEX &gt; 0 → dealers net long gamma (moves tend to get dampened / "pinned").
+                Net GEX &lt; 0 → dealers net short gamma (moves tend to accelerate / trend).
+                Only tracks from whenever this feature started running today - Open Interest has no historical time series via the broker API.
+            </div>
+            {fig_gex.to_html(full_html=False, include_plotlyjs=False, div_id='gexChart', config={'responsive': True})}
+        </div>
+    </div>
+
     <div class="tab-content" id="tab-momentum">
         <div class="speed-card">
             <div class="speed-header">
@@ -874,205 +780,24 @@ def build_dashboard_html(straddle_data, atm, rankings):
     </div>
 
     <script>
-    // ── Shared data ──────────────────────────────────────────────────────────
-    const speedData  = {json.dumps(speed_data)};
-    const allTimes   = {json.dumps(all_times)};
-    const strikesArr = {strikes_json};
-    const colors     = {json.dumps(STRIKE_COLORS)};
-    const ATM        = "{atm}";
-
-    // ── GEX data (pre-computed Python-side) ──────────────────────────────────
-    const gexSnapshots = {gex_json};
-    const GEX_GREEN    = "{GEX_GREEN}";
-    const GEX_RED      = "{GEX_RED}";
-    const GEX_FLIP_C   = "{GEX_FLIP}";
-    const BLUE_C       = "{BLUE}";
-    const MUTED_C      = "{MUTED}";
-    const TEXT_C       = "{TEXT}";
-    const BORDER_C     = "{BORDER}";
-    const CARD_C       = "{CARD}";
-    const BG_C         = "{BG}";
-
-    // ════════════════════════════════════════════════════════════════
-    // GEX PROFILE INTERACTIVE BAR CHART (Plotly.react)
-    // ════════════════════════════════════════════════════════════════
-    const gexSlider  = document.getElementById('gexSlider');
-    const gexTimeVal = document.getElementById('gexTimeVal');
-    const gexSpotVal = document.getElementById('gexSpotVal');
-    const gexFlipVal = document.getElementById('gexFlipVal');
-    const gexNetVal  = document.getElementById('gexNetVal');
-
-    gexSlider.max   = gexSnapshots.length - 1;
-    gexSlider.value = gexSnapshots.length - 1;
-
-    function buildGexBarData(snap) {{
-        const strikeLabels = strikesArr.map(s => Number(s));
-        const hasData = snap.gex_ce.some(v => v !== 0) || snap.gex_pe.some(v => v !== 0);
-
-        const trCe = {{
-            x: strikeLabels,
-            y: snap.gex_ce,
-            type: 'bar',
-            name: 'CE GEX',
-            marker: {{ color: GEX_GREEN + '99' }},
-            hovertemplate: 'Strike %{{x}}<br>CE GEX: %{{y:.3f}} Cr<extra></extra>'
-        }};
-        const trPe = {{
-            x: strikeLabels,
-            y: snap.gex_pe,
-            type: 'bar',
-            name: 'PE GEX',
-            marker: {{ color: GEX_RED + '99' }},
-            hovertemplate: 'Strike %{{x}}<br>PE GEX: %{{y:.3f}} Cr<extra></extra>'
-        }};
-        const trNet = {{
-            x: strikeLabels,
-            y: snap.gex_net,
-            type: 'scatter',
-            mode: 'lines+markers',
-            name: 'Net GEX',
-            line: {{ color: TEXT_C, width: 2 }},
-            marker: {{ size: 5, color: snap.gex_net.map(v => v >= 0 ? GEX_GREEN : GEX_RED) }},
-            hovertemplate: 'Strike %{{x}}<br>Net GEX: %{{y:.3f}} Cr<extra></extra>'
-        }};
-
-        // Spot line
-        const spotShapes = [];
-        if (snap.spot) {{
-            spotShapes.push({{
-                type: 'line', x0: snap.spot, x1: snap.spot, y0: 0, y1: 1,
-                xref: 'x', yref: 'paper',
-                line: {{ color: BLUE_C, width: 2, dash: 'dot' }}
-            }});
-        }}
-        // Flip line
-        if (snap.flip_level) {{
-            spotShapes.push({{
-                type: 'line', x0: snap.flip_level, x1: snap.flip_level, y0: 0, y1: 1,
-                xref: 'x', yref: 'paper',
-                line: {{ color: GEX_FLIP_C, width: 2, dash: 'dash' }}
-            }});
-        }}
-        // Zero GEX horizontal line
-        spotShapes.push({{
-            type: 'line', x0: 0, x1: 1, y0: 0, y1: 0,
-            xref: 'paper', yref: 'y',
-            line: {{ color: MUTED_C, width: 1, dash: 'dot' }}
-        }});
-
-        const annotations = [];
-        if (snap.spot) {{
-            annotations.push({{
-                x: snap.spot, y: 1.02, xref: 'x', yref: 'paper',
-                text: 'SPOT', showarrow: false,
-                font: {{ color: BLUE_C, size: 10 }}, xanchor: 'center'
-            }});
-        }}
-        if (snap.flip_level) {{
-            annotations.push({{
-                x: snap.flip_level, y: 0.98, xref: 'x', yref: 'paper',
-                text: 'FLIP', showarrow: false,
-                font: {{ color: GEX_FLIP_C, size: 10 }}, xanchor: 'center'
-            }});
-        }}
-        if (!hasData) {{
-            annotations.push({{
-                x: 0.5, y: 0.5, xref: 'paper', yref: 'paper',
-                text: '⚠ OI data is zero — verify Fyers returns OI column for F&O history',
-                showarrow: false, font: {{ color: MUTED_C, size: 12 }}
-            }});
-        }}
-
-        const layout = {{
-            template: 'plotly_dark',
-            paper_bgcolor: CARD_C, plot_bgcolor: CARD_C,
-            height: 420,
-            barmode: 'relative',
-            margin: {{ l: 10, r: 10, t: 30, b: 40 }},
-            xaxis: {{ title: 'Strike', color: TEXT_C, tickfont: {{ size: 10 }} }},
-            yaxis: {{ title: 'GEX (₹ Cr)', color: TEXT_C, zeroline: false }},
-            legend: {{ orientation: 'h', y: -0.15 }},
-            shapes: spotShapes,
-            annotations: annotations
-        }};
-
-        return {{ traces: [trCe, trPe, trNet], layout }};
-    }}
-
-    let gexBarInitialised = false;
-
-    function updateGexBar() {{
-        const idx  = parseInt(gexSlider.value);
-        const snap = gexSnapshots[idx];
-        if (!snap) return;
-
-        gexTimeVal.textContent = snap.time;
-        gexSpotVal.textContent = snap.spot ? snap.spot.toFixed(0) : '--';
-        gexFlipVal.textContent = snap.flip_level ? snap.flip_level.toFixed(1) : 'N/A';
-        const netGex = snap.total_net_gex;
-        gexNetVal.textContent  = netGex.toFixed(2) + ' Cr';
-        gexNetVal.style.color  = netGex >= 0 ? GEX_GREEN : GEX_RED;
-
-        const {{ traces, layout }} = buildGexBarData(snap);
-        if (!gexBarInitialised) {{
-            Plotly.newPlot('gexBarDiv', traces, layout, {{responsive: true}});
-            gexBarInitialised = true;
-        }} else {{
-            Plotly.react('gexBarDiv', traces, layout);
-        }}
-    }}
-
-    gexSlider.addEventListener('input', updateGexBar);
-
-    // ════════════════════════════════════════════════════════════════
-    // TABS
-    // ════════════════════════════════════════════════════════════════
-    const metricTabs = ['iv', 'theta', 'vega', 'gamma', 'theta15'];
-
-    function showTab(name) {{
-        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-        document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-        document.getElementById('tab-' + name).classList.add('active');
-        document.getElementById('btn-' + name).classList.add('active');
-        document.getElementById('strikeToggleBar').style.display =
-            metricTabs.includes(name) ? 'flex' : 'none';
-        window.dispatchEvent(new Event('resize'));
-
-        // Initialise GEX bar chart when tab first opens
-        if (name === 'gex' && !gexBarInitialised) {{
-            updateGexBar();
-        }}
-    }}
-    document.getElementById('strikeToggleBar').style.display = 'none';
-
-    // ════════════════════════════════════════════════════════════════
-    // STRIKE TOGGLE (IV / Theta / Vega / Gamma / Theta15 tabs)
-    // ════════════════════════════════════════════════════════════════
-    const metricChartIds = ['ivChart','thetaChart','vegaChart','gammaChart','theta15Chart'];
-    function toggleStrike(idx, checked) {{
-        metricChartIds.forEach(id => {{
-            const el = document.getElementById(id);
-            if (el && el.data) Plotly.restyle(id, {{ visible: checked }}, [idx]);
-        }});
-    }}
-
-    // ════════════════════════════════════════════════════════════════
-    // MOMENTUM TAB
-    // ════════════════════════════════════════════════════════════════
-    const timeSlider   = document.getElementById('timeSlider');
-    const timeVal      = document.getElementById('timeVal');
-    const timeDisplay  = document.getElementById('timeDisplay');
-    const tbody        = document.getElementById('speedTableBody');
-    timeSlider.max     = allTimes.length - 1;
-    timeSlider.value   = allTimes.length - 1;
-
+    const speedData = {json.dumps(speed_data)};
+    const allTimes = {json.dumps(all_times)};
+    const strikes  = {json.dumps([str(s) for s in strikes])};
+    const colors   = {json.dumps(STRIKE_COLORS)};
+    const ATM      = "{atm}";
+    const timeSlider = document.getElementById('timeSlider');
+    const timeVal    = document.getElementById('timeVal');
+    const timeDisplay = document.getElementById('timeDisplay');
+    const tbody      = document.getElementById('speedTableBody');
+    timeSlider.max = allTimes.length - 1;
+    timeSlider.value = allTimes.length - 1;
     function calcStats(strike, tIdx, durationCandles) {{
-        const series  = speedData[strike];
+        const series = speedData[strike];
         const fromIdx = Math.max(0, tIdx - durationCandles);
-        const fromPt  = series[fromIdx];
-        const toPt    = series[tIdx];
+        const fromPt = series[fromIdx];
+        const toPt = series[tIdx];
         if (!fromPt || !toPt) return null;
-        const mins  = (tIdx - fromIdx) * 5;
+        const mins = (tIdx - fromIdx) * 5;
         const delta = toPt.price - fromPt.price;
         const speed = mins > 0 ? (delta / mins) : 0;
         const slice = series.slice(fromIdx, tIdx + 1).map(d => d.price);
@@ -1080,41 +805,38 @@ def build_dashboard_html(straddle_data, atm, rankings):
         let total = 0;
         for (let i = 1; i < slice.length; i++) total += Math.abs(slice[i] - slice[i-1]);
         let smooth = total > 0 ? (net / total) * 100 : 100.0;
-        const dir  = delta > 2 ? 'UP' : delta < -2 ? 'DOWN' : 'FLAT';
-        const accentC = "{ACCENT}", redC = "{RED}", textC = "{TEXT}", blueC = "{BLUE}";
-        const badge = dir === 'UP'   ? '<span class="badge badge-up">▲ UP</span>' :
+        const dir = delta > 2 ? 'UP' : delta < -2 ? 'DOWN' : 'FLAT';
+        const badge = dir === 'UP' ? '<span class="badge badge-up">▲ UP</span>' :
                       dir === 'DOWN' ? '<span class="badge badge-down">▼ DOWN</span>' :
-                                       '<span class="badge badge-flat">— FLAT</span>';
+                      '<span class="badge badge-flat">— FLAT</span>';
         return {{
             dur: mins + 'm',
             speed: (speed >= 0 ? '+' : '') + speed.toFixed(2),
             smooth: smooth.toFixed(1) + '%',
             badge: badge,
-            speedColor: Math.abs(speed) > 5 ? (delta > 0 ? accentC : redC) : textC,
-            smoothColor: smooth > 70 ? accentC : smooth > 40 ? blueC : redC
+            speedColor: Math.abs(speed) > 5 ? (delta > 0 ? '{ACCENT}' : '{RED}') : '{TEXT}',
+            smoothColor: smooth > 70 ? '{ACCENT}' : smooth > 40 ? '{BLUE}' : '{RED}'
         }};
     }}
-
     function updateTable() {{
         const tIdx = parseInt(timeSlider.value);
-        timeVal.textContent     = allTimes[tIdx];
+        timeVal.textContent = allTimes[tIdx];
         timeDisplay.textContent = `Analysis Window End: ${{allTimes[tIdx]}}`;
-        const accentC = "{ACCENT}", redC = "{RED}", borderC = "{BORDER}";
-        const rows = strikesArr.map((strike, idx) => {{
+        const rows = strikes.map((strike, idx) => {{
             const s30 = calcStats(strike, tIdx, 6);
             const s60 = calcStats(strike, tIdx, 12);
             if (!s30 || !s60) return '';
-            const atmMark = strike === ATM ? ` <small style="color:${{accentC}}">ATM</small>` : '';
+            const atmMark = strike === ATM ? ' <small style="color:{ACCENT}">ATM</small>' : '';
             return `<tr>
-                <td style="font-weight:bold;border-right:1px solid ${{borderC}}44;">
+                <td style="font-weight:bold; border-right: 1px solid {BORDER}44;">
                     <span class="strike-dot" style="background:${{colors[idx % colors.length]}};"></span>${{strike}}${{atmMark}}
                 </td>
                 <td style="color:{MUTED}">${{s30.dur}}</td>
-                <td style="color:${{s30.speedColor}};font-weight:bold;">${{s30.speed}}</td>
+                <td style="color:${{s30.speedColor}}; font-weight:bold;">${{s30.speed}}</td>
                 <td style="color:${{s30.smoothColor}};">${{s30.smooth}}</td>
-                <td style="border-right:1px solid ${{borderC}}44;">${{s30.badge}}</td>
+                <td style="border-right: 1px solid {BORDER}44;">${{s30.badge}}</td>
                 <td style="color:{MUTED}">${{s60.dur}}</td>
-                <td style="color:${{s60.speedColor}};font-weight:bold;">${{s60.speed}}</td>
+                <td style="color:${{s60.speedColor}}; font-weight:bold;">${{s60.speed}}</td>
                 <td style="color:${{s60.smoothColor}};">${{s60.smooth}}</td>
                 <td>${{s60.badge}}</td>
             </tr>`;
@@ -1124,57 +846,83 @@ def build_dashboard_html(straddle_data, atm, rankings):
     timeSlider.addEventListener('input', updateTable);
     updateTable();
 
+    // --- Tabs ---
+    const metricTabs = ['iv', 'theta', 'vega', 'gamma', 'theta15'];
+    function showTab(name) {{
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+        document.getElementById('tab-' + name).classList.add('active');
+        document.getElementById('btn-' + name).classList.add('active');
+        document.getElementById('strikeToggleBar').style.display = metricTabs.includes(name) ? 'flex' : 'none';
+        window.dispatchEvent(new Event('resize'));
+    }}
+    document.getElementById('strikeToggleBar').style.display = 'none';
+
+    // --- Strike toggle (shared across IV / Theta / Vega / Gamma tabs) ---
+    const metricChartIds = ['ivChart', 'thetaChart', 'vegaChart', 'gammaChart', 'theta15Chart'];
+    function toggleStrike(idx, checked) {{
+        metricChartIds.forEach(id => {{
+            const el = document.getElementById(id);
+            if (el && el.data) Plotly.restyle(id, {{ visible: checked }}, [idx]);
+        }});
+    }}
+
     setTimeout(function() {{ location.reload(); }}, 300000);
     </script>
 </body>
 </html>"""
 
-    docs_path   = "docs/index.html"
+    docs_path = "docs/index.html"
     with open(docs_path, "w", encoding="utf-8") as f:
         f.write(final_html)
 
-    timestamp   = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y%m%d_%H%M%S")
     backup_path = os.path.join(OUTPUT_DIR, f"dashboard_{timestamp}.html")
     with open(backup_path, "w", encoding="utf-8") as f:
         f.write(final_html)
 
     return docs_path, backup_path
 
-
 # --- DATA FETCHING ---
 
-def fetch_candles(fyers, symbol, date):
-    """
-    Fetch 5-min OHLCV candles.  Fyers F&O history returns 7 columns (the 7th
-    is Open Interest); equity/index returns only 6.  We capture OI when
-    present so GEX can be computed without a separate round-trip.
-    """
-    data = {
-        "symbol": symbol, "resolution": "5", "date_format": "1",
-        "range_from": date, "range_to": date, "cont_flag": "1"
-    }
+def fetch_candles(fyers, symbol, date, resolution="5"):
+    data = {"symbol": symbol, "resolution": resolution, "date_format": "1", "range_from": date, "range_to": date, "cont_flag": "1"}
     try:
         resp = fyers.history(data=data)
         if resp.get("s") == "ok" and resp.get("candles"):
-            candles = resp["candles"]
-            # Detect whether OI column is present
-            if candles and len(candles[0]) >= 7:
-                cols = ["epoch", "open", "high", "low", "close", "volume", "oi"]
-            else:
-                cols = ["epoch", "open", "high", "low", "close", "volume"]
-            df = pd.DataFrame(candles, columns=cols)
-            if "oi" not in df.columns:
-                df["oi"] = 0          # equity/index: no OI
-            df["time"] = (pd.to_datetime(df["epoch"], unit="s", utc=True)
-                          .dt.tz_convert("Asia/Kolkata")
-                          .dt.tz_localize(None))
+            df = pd.DataFrame(resp["candles"], columns=["epoch","open","high","low","close","volume"])
+            df["time"] = pd.to_datetime(df["epoch"], unit="s", utc=True).dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
             return df
     except Exception as e:
-        logger.error(f"Error fetching data for {symbol}: {e}")
+        logger.error(f"Error fetching data for {symbol} (resolution={resolution}): {e}")
     return pd.DataFrame()
 
+def resample_ohlcv(df, freq="5min"):
+    """Resample a 1-min (or finer) OHLCV candle dataframe (with a 'time' column)
+    up to a coarser frequency, e.g. 5-min bars built from 1-min candles.
+    NSE's 09:15 session open is already aligned to 5-min boundaries from
+    midnight, so a plain pandas resample lines up with Fyers' native 5-min bars.
+    """
+    if df.empty:
+        return df
+    out = (
+        df.set_index("time")
+          .resample(freq)
+          .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+          .dropna(subset=["close"])
+          .reset_index()
+    )
+    return out
 
 def compute_atm(fyers, spot_df, step=STRIKE_STEP, fallback=FALLBACK_ATM, use_live_quote=True, reference="last"):
+    """Determine the ATM strike from the available spot price.
+    Live use (use_live_quote=True): tries a live quote first (most accurate
+    intraday), falls back to the last close in spot_df, then FALLBACK_ATM.
+    Backtest use (use_live_quote=False): a live quote would return TODAY's
+    price, not the historical day's, so it must be skipped. `reference`
+    controls whether to anchor off the first ('first', i.e. day-open - what
+    a live run would have seen that morning) or last ('last') candle.
+    """
     spot_price = None
     if use_live_quote:
         try:
@@ -1188,7 +936,7 @@ def compute_atm(fyers, spot_df, step=STRIKE_STEP, fallback=FALLBACK_ATM, use_liv
         row = spot_df.iloc[0] if reference == "first" else spot_df.iloc[-1]
         spot_price = row["spot"]
 
-    if spot_price is None or spot_price != spot_price:
+    if spot_price is None or spot_price != spot_price:  # None or NaN
         logger.warning(f"Could not determine spot price - falling back to hardcoded ATM {fallback}")
         return fallback
 
@@ -1196,12 +944,52 @@ def compute_atm(fyers, spot_df, step=STRIKE_STEP, fallback=FALLBACK_ATM, use_liv
     logger.info(f"Spot price: {spot_price} -> ATM strike: {atm}")
     return atm
 
+def enrich_ce_pe(ce_df, pe_df, spot_df, strike):
+    """Given already-fetched CE/PE candle dataframes (each with time, close,
+    volume - any resolution, as long as both are on the same time grid) plus
+    a spot dataframe, compute straddle price, VWAP, EMA9, IV, Gamma, Vega,
+    Theta (per-day) and Theta (trailing 15-min). Returns None if CE/PE are
+    empty. This is the shared core used by both the live dashboard and the
+    backtester (which may feed it 5-min bars resampled from 1-min data).
+    """
+    if ce_df.empty or pe_df.empty:
+        return None
+
+    merged = pd.merge(ce_df[['time','close','volume']], pe_df[['time','close','volume']], on='time')
+    merged['straddle'] = merged['close_x'] + merged['close_y']
+    merged['v'] = merged['volume_x'] + merged['volume_y']
+    merged['vwap'] = (merged['straddle'] * merged['v']).cumsum() / merged['v'].cumsum()
+    merged['ema9'] = merged['straddle'].ewm(span=9, adjust=False).mean()
+
+    if not spot_df.empty:
+        merged = pd.merge(merged, spot_df, on='time', how='left')
+        merged['spot'] = merged['spot'].ffill()
+        greeks = merged.apply(lambda row: compute_greeks_row(row, strike), axis=1)
+        merged = pd.concat([merged, greeks], axis=1)
+    else:
+        merged['iv_pct'] = float('nan')
+        merged['gamma_total'] = 0.0
+        merged['vega_total'] = 0.0
+        merged['theta_total'] = 0.0
+
+    # Trailing 15-minute theta decay: theta_total is a per-calendar-day
+    # (annualised/365) figure, so scale it down to a per-candle contribution
+    # (using the actual spacing of the data passed in), then take a rolling
+    # sum over enough candles to cover THETA_WINDOW_MINUTES.
+    if len(merged) >= 2:
+        inferred_interval_minutes = (merged['time'].iloc[1] - merged['time'].iloc[0]).total_seconds() / 60.0
+    else:
+        inferred_interval_minutes = CANDLE_INTERVAL_MINUTES
+    candles_per_window = max(1, round(THETA_WINDOW_MINUTES / inferred_interval_minutes))
+    theta_per_candle = merged['theta_total'] * (inferred_interval_minutes / 1440.0)
+    merged['theta_15min'] = theta_per_candle.rolling(window=candles_per_window, min_periods=1).sum()
+
+    return merged
 
 def fetch_and_enrich_strike(fyers, strike, spot_df):
-    """
-    Fetch CE+PE candles for a strike and enrich with straddle price, VWAP,
-    EMA9, IV, Greeks and trailing Theta.  Now also carries oi_ce / oi_pe for
-    GEX computation downstream.
+    """Fetch CE+PE 5-min candles for a strike from the API and enrich them.
+    Used by the live dashboard (main()). The backtester instead resamples
+    1-min data down to 5-min and calls enrich_ce_pe() directly.
     """
     ce_symbol = f"NSE:NIFTY{EXPIRY}{strike}CE"
     pe_symbol = f"NSE:NIFTY{EXPIRY}{strike}PE"
@@ -1209,43 +997,9 @@ def fetch_and_enrich_strike(fyers, strike, spot_df):
     ce_df = fetch_candles(fyers, ce_symbol, TARGET_DATE)
     pe_df = fetch_candles(fyers, pe_symbol, TARGET_DATE)
 
-    if ce_df.empty or pe_df.empty:
-        return None
-
-    # ── Guarantee OI column exists even when Fyers returns 6-col candles ──────
-    for _df in (ce_df, pe_df):
-        if "oi" not in _df.columns:
-            _df["oi"] = 0
-
-    merged = pd.merge(
-        ce_df[["time", "close", "volume", "oi"]],
-        pe_df[["time", "close", "volume", "oi"]],
-        on="time"
-    )
-    merged.rename(columns={"oi_x": "oi_ce", "oi_y": "oi_pe"}, inplace=True)
-    # ─────────────────────────────────────────────────────────────────────────
-
-    merged["straddle"] = merged["close_x"] + merged["close_y"]
-    merged["v"]        = merged["volume_x"] + merged["volume_y"]
-    merged["vwap"]     = (merged["straddle"] * merged["v"]).cumsum() / merged["v"].cumsum()
-    merged["ema9"]     = merged["straddle"].ewm(span=9, adjust=False).mean()
-
-    if not spot_df.empty:
-        merged = pd.merge(merged, spot_df, on="time", how="left")
-        merged["spot"] = merged["spot"].ffill()
-        greeks = merged.apply(lambda row: compute_greeks_row(row, strike), axis=1)
-        merged = pd.concat([merged, greeks], axis=1)
-    else:
-        merged["iv_ce"] = merged["iv_pe"] = merged["iv_pct"] = float("nan")
-        merged["gamma_ce"]    = merged["gamma_pe"]    = 0.0
-        merged["gamma_total"] = merged["vega_total"]  = merged["theta_total"] = 0.0
-
-    candles_per_window  = THETA_WINDOW_MINUTES // CANDLE_INTERVAL_MINUTES
-    theta_per_candle    = merged["theta_total"] * (CANDLE_INTERVAL_MINUTES / 1440.0)
-    merged["theta_15min"] = theta_per_candle.rolling(window=candles_per_window, min_periods=1).sum()
+    return enrich_ce_pe(ce_df, pe_df, spot_df, strike)
 
     return merged
-
 
 # --- MAIN ---
 
@@ -1264,13 +1018,17 @@ def main():
 
         logger.info(f"Successfully authenticated. Running analysis for {TARGET_DATE}")
 
+        # Spot index candles - needed to compute IV / Greeks AND to derive ATM
         spot_df = fetch_candles(fyers, SPOT_SYMBOL, TARGET_DATE)
         if spot_df.empty:
-            logger.warning("Could not fetch spot index data — IV/Greeks/GEX will be unavailable.")
+            logger.warning("Could not fetch spot index data - IV/Greeks will be unavailable.")
         else:
             spot_df = spot_df[["time", "close"]].rename(columns={"close": "spot"})
 
         atm = compute_atm(fyers, spot_df)
+
+        fallback_spot = spot_df.iloc[-1]["spot"] if not spot_df.empty else None
+        gex_history = update_gex_and_get_history(fyers, fallback_spot)
 
         results = {}
         successful_fetches = 0
@@ -1278,7 +1036,9 @@ def main():
         for offset in OFFSETS:
             strike = atm + offset
             logger.info(f"Fetching data for strike {strike}")
+
             merged = fetch_and_enrich_strike(fyers, strike, spot_df)
+
             if merged is not None:
                 results[strike] = merged
                 successful_fetches += 1
@@ -1288,26 +1048,24 @@ def main():
 
         if results:
             rankings = compute_rankings(results)
-            docs_path, backup_path = build_dashboard_html(results, atm, rankings)
+            docs_path, backup_path = build_dashboard_html(results, atm, rankings, gex_history)
             logger.info(f"✓ Dashboard generated: {docs_path}")
 
+            # Send to Telegram
+            #send_telegram_summary(rankings, atm, successful_fetches, len(OFFSETS))
             send_telegram_document(
                 docs_path,
                 caption=f"📊 <b>Straddle Dashboard</b> — {TARGET_DATE}\nOpen in browser to view interactive charts."
             )
+
             logger.info(f"✓ Successfully processed {successful_fetches}/{len(OFFSETS)} strikes")
         else:
             logger.error("No data successfully fetched for any strike")
-            send_telegram_message(
-                f"❌ <b>Straddle Analyser Failed</b>\nDate: {TARGET_DATE}\nNo data fetched for any strike."
-            )
+            send_telegram_message(f"❌ <b>Straddle Analyser Failed</b>\nDate: {TARGET_DATE}\nNo data fetched for any strike.")
 
     except Exception as e:
         logger.error(f"Error in main execution: {e}", exc_info=True)
-        send_telegram_message(
-            f"❌ <b>Straddle Analyser Error</b>\nDate: {TARGET_DATE}\n<code>{str(e)}</code>"
-        )
-
+        send_telegram_message(f"❌ <b>Straddle Analyser Error</b>\nDate: {TARGET_DATE}\n<code>{str(e)}</code>")
 
 if __name__ == "__main__":
     main()
