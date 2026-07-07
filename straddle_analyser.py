@@ -588,6 +588,7 @@ def build_dashboard_html(straddle_data, atm, rankings):
     gex_json = json.dumps(gex_snapshots)
     strikes_json = json.dumps([str(s) for s in strikes])
 
+    _pcfg = {"responsive": True}   # plotly config — must NOT be inline in f-string
     final_html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -725,19 +726,19 @@ def build_dashboard_html(straddle_data, atm, rankings):
 
     <!-- ════════ IV / THETA / VEGA / GAMMA / THETA15 TABS ════════ -->
     <div class="tab-content" id="tab-iv">
-        <div class="metric-card">{fig_iv.to_html(full_html=False, include_plotlyjs=False, div_id='ivChart', config={{'responsive':True}})}</div>
+        <div class="metric-card">{fig_iv.to_html(full_html=False, include_plotlyjs=False, div_id='ivChart', config=_pcfg)}</div>
     </div>
     <div class="tab-content" id="tab-theta">
-        <div class="metric-card">{fig_theta.to_html(full_html=False, include_plotlyjs=False, div_id='thetaChart', config={{'responsive':True}})}</div>
+        <div class="metric-card">{fig_theta.to_html(full_html=False, include_plotlyjs=False, div_id='thetaChart', config=_pcfg)}</div>
     </div>
     <div class="tab-content" id="tab-vega">
-        <div class="metric-card">{fig_vega.to_html(full_html=False, include_plotlyjs=False, div_id='vegaChart', config={{'responsive':True}})}</div>
+        <div class="metric-card">{fig_vega.to_html(full_html=False, include_plotlyjs=False, div_id='vegaChart', config=_pcfg)}</div>
     </div>
     <div class="tab-content" id="tab-gamma">
-        <div class="metric-card">{fig_gamma.to_html(full_html=False, include_plotlyjs=False, div_id='gammaChart', config={{'responsive':True}})}</div>
+        <div class="metric-card">{fig_gamma.to_html(full_html=False, include_plotlyjs=False, div_id='gammaChart', config=_pcfg)}</div>
     </div>
     <div class="tab-content" id="tab-theta15">
-        <div class="metric-card">{fig_theta15.to_html(full_html=False, include_plotlyjs=False, div_id='theta15Chart', config={{'responsive':True}})}</div>
+        <div class="metric-card">{fig_theta15.to_html(full_html=False, include_plotlyjs=False, div_id='theta15Chart', config=_pcfg)}</div>
     </div>
 
     <!-- ════════════════════════════════════════════════════════════
@@ -802,7 +803,7 @@ def build_dashboard_html(straddle_data, atm, rankings):
                 <!-- Right: Spot vs Flip Level + Net GEX time series (static Plotly) -->
                 <div class="gex-ts-card">
                     <h2>NIFTY SPOT vs FLIP LEVEL  ·  NET GEX TIMELINE</h2>
-                    {fig_gex_ts.to_html(full_html=False, include_plotlyjs=False, div_id='gexTsChart', config={{'responsive':True}})}
+                    {fig_gex_ts.to_html(full_html=False, include_plotlyjs=False, div_id='gexTsChart', config=_pcfg)}
                 </div>
 
             </div>
