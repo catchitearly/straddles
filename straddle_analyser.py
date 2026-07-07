@@ -316,11 +316,13 @@ def compute_gex_all_candles(straddle_data):
                 gex_pe_list.append(0.0)
                 continue
 
-            # Use pre-computed individual gammas from compute_greeks_row
-            gamma_ce = _safe_float(row.get("gamma_ce", 0.0))
-            gamma_pe = _safe_float(row.get("gamma_pe", 0.0))
-            oi_ce    = _safe_float(row.get("oi_ce", 0))
-            oi_pe    = _safe_float(row.get("oi_pe", 0))
+            # Use pre-computed individual gammas (fall back to 0 if column absent)
+            # gamma_ce/gamma_pe are set by compute_greeks_row; oi_ce/oi_pe by fetch_candles.
+            # pandas Series.get() returns None for missing keys — _safe_float converts to 0.0.
+            gamma_ce = _safe_float(row.get("gamma_ce") if "gamma_ce" in row.index else 0.0)
+            gamma_pe = _safe_float(row.get("gamma_pe") if "gamma_pe" in row.index else 0.0)
+            oi_ce    = _safe_float(row.get("oi_ce")    if "oi_ce"    in row.index else 0.0)
+            oi_pe    = _safe_float(row.get("oi_pe")    if "oi_pe"    in row.index else 0.0)
 
             scale = (S ** 2) * LOT_SIZE / GEX_SCALE   # units: ₹ Crore
             gex_ce_list.append(round( gamma_ce * oi_ce * scale, 4))
@@ -455,28 +457,53 @@ def _metric_figure(straddle_data, strikes, atm, column, title, yaxis_title):
 def build_dashboard_html(straddle_data, atm, rankings):
     strikes = sorted(straddle_data.keys())
 
-    # ── Pre-compute GEX data ──────────────────────────────────────────────────
+    # ── Pre-compute GEX data (wrapped so a failure never kills the dashboard) ──
     logger.info("Computing GEX data for all candles…")
-    gex_snapshots = compute_gex_all_candles(straddle_data)
-    fig_gex_ts    = build_gex_timeseries_figure(gex_snapshots)
+    _gex_error_msg = ""
+    try:
+        gex_snapshots = compute_gex_all_candles(straddle_data)
+        logger.info(f"✓ GEX computed: {len(gex_snapshots)} candle snapshots")
+        fig_gex_ts    = build_gex_timeseries_figure(gex_snapshots)
 
-    # Summary: last (most recent) snapshot
-    last_snap       = gex_snapshots[-1]
-    last_spot       = last_snap.get("spot") or 0
-    last_flip       = last_snap.get("flip_level")
-    last_total_gex  = last_snap.get("total_net_gex", 0)
+        last_snap      = gex_snapshots[-1]
+        last_spot      = last_snap.get("spot") or 0
+        last_flip      = last_snap.get("flip_level")
+        last_total_gex = last_snap.get("total_net_gex", 0)
 
-    if last_flip is not None:
-        gamma_regime      = "POSITIVE GAMMA" if last_spot >= last_flip else "NEGATIVE GAMMA"
-        gamma_regime_color = GEX_GREEN         if last_spot >= last_flip else GEX_RED
-        gamma_regime_tip  = "Market makers are LONG gamma → expect mean-reversion / range-bound action." \
-                            if last_spot >= last_flip else \
-                            "Market makers are SHORT gamma → expect trending / volatile moves."
-        flip_display      = f"{last_flip:.0f}"
-    else:
-        gamma_regime, gamma_regime_color = "UNKNOWN", MUTED
-        gamma_regime_tip  = "Flip level could not be determined (insufficient OI data?)."
-        flip_display      = "N/A"
+        if last_flip is not None:
+            gamma_regime       = "POSITIVE GAMMA" if last_spot >= last_flip else "NEGATIVE GAMMA"
+            gamma_regime_color = GEX_GREEN         if last_spot >= last_flip else GEX_RED
+            gamma_regime_tip   = ("Market makers are LONG gamma → expect mean-reversion / range-bound action."
+                                  if last_spot >= last_flip else
+                                  "Market makers are SHORT gamma → expect trending / volatile moves.")
+            flip_display       = f"{last_flip:.0f}"
+        else:
+            gamma_regime, gamma_regime_color = "UNKNOWN", MUTED
+            gamma_regime_tip   = "Flip level could not be determined (check OI data)."
+            flip_display       = "N/A"
+
+    except Exception as _gex_exc:
+        logger.error(f"GEX computation failed (tab will show error): {_gex_exc}", exc_info=True)
+        _gex_error_msg    = str(_gex_exc)
+        # Build empty fallback structures so the rest of the HTML renders fine
+        ref_df            = straddle_data[sorted(straddle_data.keys())[0]]
+        gex_snapshots     = [
+            {"time": row["time"].strftime("%H:%M"), "spot": None, "flip_level": None,
+             "total_net_gex": 0.0, "gex_ce": [0.0]*len(strikes),
+             "gex_pe": [0.0]*len(strikes), "gex_net": [0.0]*len(strikes)}
+            for _, row in ref_df.iterrows()
+        ]
+        fig_gex_ts         = go.Figure()
+        fig_gex_ts.update_layout(
+            template="plotly_dark", paper_bgcolor=CARD, plot_bgcolor=CARD, height=400,
+            annotations=[dict(text=f"GEX unavailable: {_gex_error_msg}",
+                              x=0.5, y=0.5, xref="paper", yref="paper",
+                              showarrow=False, font=dict(color=RED, size=13))]
+        )
+        last_spot, last_flip, last_total_gex = 0, None, 0.0
+        gamma_regime, gamma_regime_color     = "ERROR", RED
+        gamma_regime_tip                     = f"GEX failed: {_gex_error_msg}"
+        flip_display                         = "ERR"
     # ─────────────────────────────────────────────────────────────────────────
 
     fig_main = make_subplots(
@@ -543,15 +570,19 @@ def build_dashboard_html(straddle_data, atm, rankings):
     ])
 
     # ── GEX bar-chart summary rows (last snapshot) ────────────────────────────
-    gex_table_rows = "".join([
-        f"""<tr style="border-bottom:1px solid {BORDER};">
-            <td style="padding:8px;color:{STRIKE_COLORS[i % len(STRIKE_COLORS)]};"><b>{strike}</b>
-                {' <small style="color:' + ACCENT + '">ATM</small>' if strike == atm else ''}</td>
-            <td style="padding:8px;color:{GEX_GREEN};">{last_snap['gex_ce'][i]:+.3f}</td>
-            <td style="padding:8px;color:{GEX_RED};">{last_snap['gex_pe'][i]:+.3f}</td>
-            <td style="padding:8px;color:{GEX_GREEN if last_snap['gex_net'][i]>=0 else GEX_RED};font-weight:bold;">{last_snap['gex_net'][i]:+.3f}</td>
-        </tr>""" for i, strike in enumerate(strikes)
-    ])
+    _last = gex_snapshots[-1]
+    if _gex_error_msg:
+        gex_table_rows = f'<tr><td colspan="4" style="padding:12px;color:{RED};">GEX failed — {_gex_error_msg}</td></tr>'
+    else:
+        gex_table_rows = "".join([
+            f"""<tr style="border-bottom:1px solid {BORDER};">
+                <td style="padding:8px;color:{STRIKE_COLORS[i % len(STRIKE_COLORS)]};"><b>{strike}</b>
+                    {' <small style="color:' + ACCENT + '">ATM</small>' if strike == atm else ''}</td>
+                <td style="padding:8px;color:{GEX_GREEN};">{_last['gex_ce'][i]:+.3f}</td>
+                <td style="padding:8px;color:{GEX_RED};">{_last['gex_pe'][i]:+.3f}</td>
+                <td style="padding:8px;color:{GEX_GREEN if _last['gex_net'][i]>=0 else GEX_RED};font-weight:bold;">{_last['gex_net'][i]:+.3f}</td>
+            </tr>""" for i, strike in enumerate(strikes)
+        ])
 
     # ── Embed GEX snapshots as JSON for the interactive JS bar chart ──────────
     gex_json = json.dumps(gex_snapshots)
@@ -1180,7 +1211,11 @@ def fetch_and_enrich_strike(fyers, strike, spot_df):
     if ce_df.empty or pe_df.empty:
         return None
 
-    # ── MODIFIED: include OI columns in merge ────────────────────────────────
+    # ── Guarantee OI column exists even when Fyers returns 6-col candles ──────
+    for _df in (ce_df, pe_df):
+        if "oi" not in _df.columns:
+            _df["oi"] = 0
+
     merged = pd.merge(
         ce_df[["time", "close", "volume", "oi"]],
         pe_df[["time", "close", "volume", "oi"]],
