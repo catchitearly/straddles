@@ -24,10 +24,10 @@ TARGET_DATE = os.getenv("TARGET_DATE") or datetime.now(ZoneInfo("Asia/Kolkata"))
 EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26714")  # Update as needed (Fyers symbol expiry code)
 EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-07-14")  # Update as needed - actual calendar expiry date, must match EXPIRY above
 EXPIRY_TIME = "15:30"  # Market close time on expiry day
-RISK_FREE_RATE = 0.1  # Annualised risk-free rate used for Black-Scholes / IV solving
+RISK_FREE_RATE = 0.065  # Annualised risk-free rate used for Black-Scholes / IV solving
 SPOT_SYMBOL = "NSE:NIFTY50-INDEX"
 STRIKE_STEP = 50  # Nifty weekly strikes are in steps of 50
-FALLBACK_ATM = 24500  # Used only if the spot fetch fails
+FALLBACK_ATM = 24300  # Used only if the spot fetch fails
 CANDLE_INTERVAL_MINUTES = 5  # Must match the "resolution" used in fetch_candles
 THETA_WINDOW_MINUTES = 15  # Trailing window for the "15 Min Theta" tab
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
@@ -47,7 +47,7 @@ GEX_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_history_{TARGET_DATE}.json")
 
 # Weekly expiry codes (same Fyers symbol-code format as EXPIRY above) to combine
 # for the "Combined GEX" tab, e.g. this week + next two weeks. Update as needed.
-GEX_MULTI_EXPIRY_CODES = ["26714", "26721", "26JUL"]
+GEX_MULTI_EXPIRY_CODES = ["26JUL", "26714", "26721"]
 GEX_COMBINED_HISTORY_FILE = os.path.join(OUTPUT_DIR, f"gex_combined_history_{TARGET_DATE}.json")
 GEX_COMBINED_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_combined_history_{TARGET_DATE}.json")
 
@@ -386,37 +386,68 @@ def fetch_available_expiries(fyers):
             out.append({"date": date_val, "epoch": epoch_val})
     return out
 
+MONTH_ABBREVS = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+                  "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+
 def parse_expiry_code(code):
-    """Parse a Fyers weekly-expiry symbol code (e.g. '26707') into a date.
-    Format observed/assumed: YY + M + DD, where M is a single character
-    (1-9 for Jan-Sep, O/N/D for Oct/Nov/Dec). E.g. '26707' -> 2026-07-07.
-    NOTE: inferred from the existing EXPIRY convention in this script and
-    confirmed against the three consecutive-Tuesday codes you provided -
-    please double check for Oct/Nov/Dec expiries specifically.
+    """Parse a Fyers expiry symbol code into either:
+      - ("weekly", date)        for weekly codes like '26707' -> YY + M(1 char,
+        1-9=Jan-Sep, O/N/D=Oct-Dec) + DD, e.g. '26707' -> 2026-07-07.
+      - ("monthly", year, month) for monthly codes like '26JUL' -> YY + 3-letter
+        month abbreviation (no day - the monthly contract's exact date, usually
+        the last Tuesday of the month, is resolved from Fyers' own expiry list
+        via _match_expiry_epoch(), not guessed here).
+    NOTE: the weekly YYMDD pattern is inferred from this script's existing EXPIRY
+    convention and confirmed against the three consecutive-Tuesday codes you
+    provided - please double check for Oct/Nov/Dec weekly expiries specifically.
     """
+    code = code.strip().upper()
+    if len(code) == 5 and code[2:].isalpha() and code[2:] in MONTH_ABBREVS:
+        yy = int(code[:2])
+        month = MONTH_ABBREVS[code[2:]]
+        return ("monthly", 2000 + yy, month)
+
     month_map = {**{str(m): m for m in range(1, 10)}, "O": 10, "N": 11, "D": 12}
     yy = int(code[:2])
     m_char = code[2]
     dd = int(code[3:])
     month = month_map.get(m_char)
     if month is None:
-        raise ValueError(f"Could not parse month character {m_char!r} in expiry code {code!r}")
-    year = 2000 + yy
-    return datetime(year, month, dd).date()
+        raise ValueError(f"Could not parse expiry code {code!r} as weekly (YYMDD) or monthly (YY+MON)")
+    return ("weekly", datetime(2000 + yy, month, dd).date())
 
-def _match_expiry_epoch(target_date, available_expiries):
-    """Match a target calendar date against Fyers' reported expiry list,
-    trying a few common date-string formats defensively.
+def _match_expiry_epoch(parsed, available_expiries):
+    """Resolve a parsed expiry code against Fyers' reported expiry list.
+    Returns (resolved_date, epoch) or (None, None) if no match.
+    For "weekly" codes: exact date match.
+    For "monthly" codes: the LATEST available expiry date within that
+    calendar month (NIFTY's monthly contract = the last weekly of the month).
+    Always returns Fyers' own reported date (not our guessed one), which also
+    protects against a weekly expiry shifting a day for an exchange holiday.
     """
+    parsed_dates = []
     for rec in available_expiries:
         raw = str(rec["date"])
         for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d-%b-%Y", "%d %b %Y"):
             try:
-                if datetime.strptime(raw, fmt).date() == target_date:
-                    return rec["epoch"]
+                parsed_dates.append((datetime.strptime(raw, fmt).date(), rec["epoch"]))
+                break
             except ValueError:
                 continue
-    return None
+
+    kind = parsed[0]
+    if kind == "weekly":
+        target_date = parsed[1]
+        for d, epoch in parsed_dates:
+            if d == target_date:
+                return d, epoch
+        return None, None
+    else:  # monthly
+        _, year, month = parsed
+        candidates = sorted((d, e) for d, e in parsed_dates if d.year == year and d.month == month)
+        if not candidates:
+            return None, None
+        return candidates[-1]  # latest date in that month = the monthly expiry
 
 def compute_gex_snapshot(chain_df, spot, expiry_dt=None, as_of=None):
     """Per-strike Gamma Exposure using our own BS gamma (IV solved from each
@@ -605,26 +636,26 @@ def update_combined_gex_and_get_history(fyers, fallback_spot, expiry_codes=None)
 
         for code in expiry_codes:
             try:
-                target_date = parse_expiry_code(code)
+                parsed = parse_expiry_code(code)
             except ValueError as e:
                 logger.warning(f"Skipping expiry code {code!r}: {e}")
                 continue
 
-            epoch = _match_expiry_epoch(target_date, available)
+            resolved_date, epoch = _match_expiry_epoch(parsed, available)
             if epoch is None:
-                logger.warning(f"No matching Fyers expiry found for code {code!r} (parsed date {target_date}). "
+                logger.warning(f"No matching Fyers expiry found for code {code!r} (parsed as {parsed}). "
                                 f"Available dates: {[r['date'] for r in available]}")
                 continue
 
             chain_df, chain_spot, _ = fetch_option_chain(fyers, timestamp=epoch)
             if chain_df is None:
-                logger.warning(f"No chain data for expiry {code} ({target_date}) - skipping this expiry.")
+                logger.warning(f"No chain data for expiry {code} ({resolved_date}) - skipping this expiry.")
                 continue
             spot = chain_spot or spot
             if not spot:
                 continue
 
-            expiry_dt = datetime.combine(target_date, dtime.fromisoformat(EXPIRY_TIME), tzinfo=ZoneInfo("Asia/Kolkata"))
+            expiry_dt = datetime.combine(resolved_date, dtime.fromisoformat(EXPIRY_TIME), tzinfo=ZoneInfo("Asia/Kolkata"))
             gex_df = compute_gex_snapshot(chain_df, spot, expiry_dt=expiry_dt)
             per_expiry_net_gex[code] = float(gex_df["gex_net"].sum())
 
@@ -634,7 +665,7 @@ def update_combined_gex_and_get_history(fyers, fallback_spot, expiry_codes=None)
                     "iv_ce": row["iv_ce"], "iv_pe": row["iv_pe"],
                     "oi_ce": row["oi_ce"], "oi_pe": row["oi_pe"],
                 })
-            logger.info(f"✓ Loaded expiry {code} ({target_date}) for combined GEX: net={per_expiry_net_gex[code]/GEX_SCALE:.2f} Cr")
+            logger.info(f"✓ Loaded expiry {code} ({resolved_date}) for combined GEX: net={per_expiry_net_gex[code]/GEX_SCALE:.2f} Cr")
 
         if not combined_records or not spot:
             logger.warning("Skipping combined GEX snapshot this run (no expiries loaded).")
