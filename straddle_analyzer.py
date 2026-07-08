@@ -21,13 +21,13 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 TARGET_DATE = os.getenv("TARGET_DATE") or datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
-EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26707")  # Update as needed (Fyers symbol expiry code)
-EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-07-07")  # Update as needed - actual calendar expiry date, must match EXPIRY above
+EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26714")  # Update as needed (Fyers symbol expiry code)
+EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-07-14")  # Update as needed - actual calendar expiry date, must match EXPIRY above
 EXPIRY_TIME = "15:30"  # Market close time on expiry day
-RISK_FREE_RATE = 0.065  # Annualised risk-free rate used for Black-Scholes / IV solving
+RISK_FREE_RATE = 0.1  # Annualised risk-free rate used for Black-Scholes / IV solving
 SPOT_SYMBOL = "NSE:NIFTY50-INDEX"
 STRIKE_STEP = 50  # Nifty weekly strikes are in steps of 50
-FALLBACK_ATM = 24300  # Used only if the spot fetch fails
+FALLBACK_ATM = 24500  # Used only if the spot fetch fails
 CANDLE_INTERVAL_MINUTES = 5  # Must match the "resolution" used in fetch_candles
 THETA_WINDOW_MINUTES = 15  # Trailing window for the "15 Min Theta" tab
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
@@ -47,7 +47,7 @@ GEX_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_history_{TARGET_DATE}.json")
 
 # Weekly expiry codes (same Fyers symbol-code format as EXPIRY above) to combine
 # for the "Combined GEX" tab, e.g. this week + next two weeks. Update as needed.
-GEX_MULTI_EXPIRY_CODES = ["26707", "26714", "26721"]
+GEX_MULTI_EXPIRY_CODES = ["26714", "26721", "26JUL"]
 GEX_COMBINED_HISTORY_FILE = os.path.join(OUTPUT_DIR, f"gex_combined_history_{TARGET_DATE}.json")
 GEX_COMBINED_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_combined_history_{TARGET_DATE}.json")
 
