@@ -237,7 +237,8 @@ def compute_greeks_row(row, strike):
     if S is None or S != S or S <= 0:
         return pd.Series({
             "iv_ce": float("nan"), "iv_pe": float("nan"), "iv_pct": float("nan"),
-            "gamma_total": 0.0, "vega_total": 0.0, "theta_total": 0.0
+            "gamma_total": 0.0, "vega_total": 0.0,
+            "theta_total": 0.0, "theta_ce": 0.0, "theta_pe": 0.0,
         })
     iv_ce = implied_vol(row["close_x"], S, strike, t_years, RISK_FREE_RATE, "CE")
     iv_pe = implied_vol(row["close_y"], S, strike, t_years, RISK_FREE_RATE, "PE")
@@ -247,11 +248,14 @@ def compute_greeks_row(row, strike):
     theta_pe = bs_theta(S, strike, t_years, RISK_FREE_RATE, iv_pe, "PE")
     ivs = [v for v in (iv_ce, iv_pe) if v == v]
     iv_pct = (sum(ivs) / len(ivs) * 100.0) if ivs else float("nan")
+    _n0 = lambda v: v if v == v else 0.0
     return pd.Series({
         "iv_ce": iv_ce, "iv_pe": iv_pe, "iv_pct": iv_pct,
-        "gamma_total": (gamma_ce if gamma_ce == gamma_ce else 0.0) + (gamma_pe if gamma_pe == gamma_pe else 0.0),
-        "vega_total":  (vega_ce  if vega_ce  == vega_ce  else 0.0) + (vega_pe  if vega_pe  == vega_pe  else 0.0),
-        "theta_total": (theta_ce if theta_ce == theta_ce else 0.0) + (theta_pe if theta_pe == theta_pe else 0.0),
+        "gamma_total": _n0(gamma_ce) + _n0(gamma_pe),
+        "vega_total":  _n0(vega_ce)  + _n0(vega_pe),
+        "theta_total": _n0(theta_ce) + _n0(theta_pe),
+        "theta_ce":    _n0(theta_ce),   # CE leg theta per calendar day
+        "theta_pe":    _n0(theta_pe),   # PE leg theta per calendar day
     })
 
 # =============================================================================
@@ -785,6 +789,65 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
         </label>""" for idx, strike in enumerate(strikes)
     ])
 
+    # ── OTM Analysis figures ──────────────────────────────────────────────────
+    # CE OTM = strikes ABOVE ATM  → show CE leg: price, IV, Theta, 15-min Theta
+    # PE OTM = strikes BELOW ATM  → show PE leg: price, IV, Theta, 15-min Theta
+    ce_otm_strikes = [s for s in strikes if s > atm]
+    pe_otm_strikes = [s for s in strikes if s < atm]
+
+    def _otm_fig(strike_list, col, title, yaxis_title, data_col_key):
+        """Build a Plotly figure for one OTM group + one metric column."""
+        fig = go.Figure()
+        for idx, strike in enumerate(strike_list):
+            df    = straddle_data[strike]
+            if data_col_key not in df.columns:
+                continue
+            color = STRIKE_COLORS[idx % len(STRIKE_COLORS)]
+            fig.add_trace(go.Scatter(
+                x=df["time"], y=df[data_col_key],
+                name=str(strike),
+                line=dict(color=color, width=2),
+                hovertemplate=f"Strike {strike}<br>%{{x}}<br>{yaxis_title}: %{{y:.4f}}<extra></extra>",
+            ))
+        fig.update_layout(
+            title=title, template="plotly_dark", paper_bgcolor=CARD, plot_bgcolor=CARD,
+            height=380, yaxis_title=yaxis_title, margin=dict(l=10, r=10, t=45, b=10),
+            legend=dict(orientation="h", y=-0.20),
+        )
+        return fig
+
+    # CE OTM: 4 charts
+    fig_ce_price    = _otm_fig(ce_otm_strikes, "close_x", "CE OTM — Price (₹)",              "CE Price (₹)",    "close_x")
+    fig_ce_iv       = _otm_fig(ce_otm_strikes, "iv_ce",   "CE OTM — Implied Volatility (%)",  "IV (%)",          "iv_ce")
+    fig_ce_theta    = _otm_fig(ce_otm_strikes, "theta_ce", "CE OTM — Theta (₹/day)",          "Theta (₹/day)",   "theta_ce")
+    fig_ce_theta15  = _otm_fig(ce_otm_strikes, "theta_ce_15min", f"CE OTM — Trailing {THETA_WINDOW_MINUTES}-min Theta (₹)", "Theta (₹/15min)", "theta_ce_15min")
+
+    # PE OTM: 4 charts
+    fig_pe_price    = _otm_fig(pe_otm_strikes, "close_y", "PE OTM — Price (₹)",              "PE Price (₹)",    "close_y")
+    fig_pe_iv       = _otm_fig(pe_otm_strikes, "iv_pe",   "PE OTM — Implied Volatility (%)",  "IV (%)",          "iv_pe")
+    fig_pe_theta    = _otm_fig(pe_otm_strikes, "theta_pe", "PE OTM — Theta (₹/day)",          "Theta (₹/day)",   "theta_pe")
+    fig_pe_theta15  = _otm_fig(pe_otm_strikes, "theta_pe_15min", f"PE OTM — Trailing {THETA_WINDOW_MINUTES}-min Theta (₹)", "Theta (₹/15min)", "theta_pe_15min")
+
+    # Convert all IV series from raw (0–1) to % for display (iv_ce is a fraction from implied_vol)
+    for _fig in (fig_ce_iv, fig_pe_iv):
+        for _trace in _fig.data:
+            _trace.y = [v * 100.0 if v == v and v is not None else v for v in (_trace.y or [])]
+
+    # OTM label strings and Plotly HTML for the f-string
+    ce_otm_label   = ", ".join(str(s) for s in ce_otm_strikes) if ce_otm_strikes else "none"
+    pe_otm_label   = ", ".join(str(s) for s in pe_otm_strikes) if pe_otm_strikes else "none"
+
+    _pjs = False   # plotlyjs already loaded by cdn in fig_rank
+    ce_price_html   = fig_ce_price.to_html(  full_html=False, include_plotlyjs=_pjs, div_id="cePriceChart",   config=_pcfg)
+    ce_iv_html      = fig_ce_iv.to_html(     full_html=False, include_plotlyjs=_pjs, div_id="ceIvChart",      config=_pcfg)
+    ce_theta_html   = fig_ce_theta.to_html(  full_html=False, include_plotlyjs=_pjs, div_id="ceThetaChart",   config=_pcfg)
+    ce_theta15_html = fig_ce_theta15.to_html(full_html=False, include_plotlyjs=_pjs, div_id="ceTheta15Chart", config=_pcfg)
+    pe_price_html   = fig_pe_price.to_html(  full_html=False, include_plotlyjs=_pjs, div_id="pePriceChart",   config=_pcfg)
+    pe_iv_html      = fig_pe_iv.to_html(     full_html=False, include_plotlyjs=_pjs, div_id="peIvChart",      config=_pcfg)
+    pe_theta_html   = fig_pe_theta.to_html(  full_html=False, include_plotlyjs=_pjs, div_id="peThetaChart",   config=_pcfg)
+    pe_theta15_html = fig_pe_theta15.to_html(full_html=False, include_plotlyjs=_pjs, div_id="peTheta15Chart", config=_pcfg)
+
+    _pcfg = {"responsive": True}
     final_html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -857,6 +920,7 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
         <button class="tab-btn"        id="btn-theta15"     onclick="showTab('theta15')">15 MIN THETA</button>
         <button class="tab-btn"        id="btn-gex"         onclick="showTab('gex')">GEX &amp; FLIP</button>
         <button class="tab-btn"        id="btn-gexcombined" onclick="showTab('gexcombined')">COMBINED GEX</button>
+        <button class="tab-btn"        id="btn-otm"         onclick="showTab('otm')">OTM ANALYSIS</button>
         <button class="tab-btn"        id="btn-momentum"    onclick="showTab('momentum')">MOMENTUM</button>
     </div>
 
@@ -938,6 +1002,62 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
                 Each expiry uses its own time-to-expiry T when recomputing gamma on the flip grid.
             </div>
             {fig_gex_combined.to_html(full_html=False, include_plotlyjs=False, div_id='gexCombinedChart', config={'responsive': True})}
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-otm">
+        <div style="padding:20px;">
+
+            <!-- ── CE OTM Section ── -->
+            <div style="background:{CARD};border:1px solid {BORDER};border-radius:8px;padding:16px 20px;margin-bottom:8px;">
+                <h2 style="color:{ACCENT};font-size:14px;letter-spacing:1px;margin:0 0 4px 0;">
+                    📈 CE OTM STRIKES — {ce_otm_label}
+                </h2>
+                <div style="font-size:11px;color:{MUTED};">
+                    Strikes above ATM ({atm}). CE leg price, IV, Theta and 15-min trailing Theta.
+                </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
+                <div style="background:{CARD};border:1px solid {BORDER};border-radius:8px;padding:16px;">
+                    {ce_price_html}
+                </div>
+                <div style="background:{CARD};border:1px solid {BORDER};border-radius:8px;padding:16px;">
+                    {ce_iv_html}
+                </div>
+                <div style="background:{CARD};border:1px solid {BORDER};border-radius:8px;padding:16px;">
+                    {ce_theta_html}
+                </div>
+                <div style="background:{CARD};border:1px solid {BORDER};border-radius:8px;padding:16px;">
+                    {ce_theta15_html}
+                </div>
+            </div>
+
+            <!-- ── PE OTM Section ── -->
+            <div style="background:{CARD};border:1px solid {BORDER};border-radius:8px;padding:16px 20px;margin-bottom:8px;">
+                <h2 style="color:{RED};font-size:14px;letter-spacing:1px;margin:0 0 4px 0;">
+                    📉 PE OTM STRIKES — {pe_otm_label}
+                </h2>
+                <div style="font-size:11px;color:{MUTED};">
+                    Strikes below ATM ({atm}). PE leg price, IV, Theta and 15-min trailing Theta.
+                </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
+                <div style="background:{CARD};border:1px solid {BORDER};border-radius:8px;padding:16px;">
+                    {pe_price_html}
+                </div>
+                <div style="background:{CARD};border:1px solid {BORDER};border-radius:8px;padding:16px;">
+                    {pe_iv_html}
+                </div>
+                <div style="background:{CARD};border:1px solid {BORDER};border-radius:8px;padding:16px;">
+                    {pe_theta_html}
+                </div>
+                <div style="background:{CARD};border:1px solid {BORDER};border-radius:8px;padding:16px;">
+                    {pe_theta15_html}
+                </div>
+            </div>
+
         </div>
     </div>
 
@@ -1142,13 +1262,18 @@ def enrich_ce_pe(ce_df, pe_df, spot_df, strike):
     else:
         merged['iv_pct'] = float('nan')
         merged['gamma_total'] = merged['vega_total'] = merged['theta_total'] = 0.0
+        merged['theta_ce'] = merged['theta_pe'] = 0.0
     if len(merged) >= 2:
         inferred_interval = (merged['time'].iloc[1] - merged['time'].iloc[0]).total_seconds() / 60.0
     else:
         inferred_interval = CANDLE_INTERVAL_MINUTES
-    candles_per_window    = max(1, round(THETA_WINDOW_MINUTES / inferred_interval))
-    theta_per_candle      = merged['theta_total'] * (inferred_interval / 1440.0)
-    merged['theta_15min'] = theta_per_candle.rolling(window=candles_per_window, min_periods=1).sum()
+    candles_per_window = max(1, round(THETA_WINDOW_MINUTES / inferred_interval))
+    scale = inferred_interval / 1440.0
+    # Straddle trailing theta (existing)
+    merged['theta_15min']    = (merged['theta_total'] * scale).rolling(window=candles_per_window, min_periods=1).sum()
+    # Individual leg trailing theta for OTM analysis (NEW)
+    merged['theta_ce_15min'] = (merged['theta_ce']    * scale).rolling(window=candles_per_window, min_periods=1).sum()
+    merged['theta_pe_15min'] = (merged['theta_pe']    * scale).rolling(window=candles_per_window, min_periods=1).sum()
     return merged
 
 def fetch_and_enrich_strike(fyers, strike, spot_df):
