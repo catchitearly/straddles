@@ -954,7 +954,7 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
             <div class="sidebar">
                 <div class="card">
                     <h2>SMOOTHNESS RANKING</h2>
-                    {fig_rank.to_html(full_html=False, include_plotlyjs='cdn')}
+                    {fig_rank.to_html(full_html=False, include_plotlyjs=True, div_id='rankChart')}
                 </div>
                 <div class="card">
                     <h2>STATISTICS TABLE</h2>
@@ -972,7 +972,7 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
                         <span class="legend-item"><span class="legend-line legend-dashed"></span> VWAP</span>
                         <span class="legend-item"><span class="legend-line legend-ema"></span> EMA 9</span>
                     </div>
-                    {fig_main.to_html(full_html=False, include_plotlyjs=False)}
+                    {fig_main.to_html(full_html=False, include_plotlyjs=False, div_id='mainChart')}
                 </div>
             </div>
         </div>
@@ -1136,15 +1136,42 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
 
     // --- Tabs ---
     const metricTabs = ['iv', 'theta', 'vega', 'gamma', 'theta15'];
+    const tabChartIds = {{
+        overview: ['rankChart', 'mainChart'],
+        iv: ['ivChart'],
+        theta: ['thetaChart'],
+        vega: ['vegaChart'],
+        gamma: ['gammaChart'],
+        theta15: ['theta15Chart'],
+        gex: ['gexChart'],
+        gexcombined: ['gexCombinedChart']
+    }};
     function showTab(name) {{
         document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
         document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
         document.getElementById('tab-' + name).classList.add('active');
         document.getElementById('btn-' + name).classList.add('active');
         document.getElementById('strikeToggleBar').style.display = metricTabs.includes(name) ? 'flex' : 'none';
+        // Plotly charts inside a tab that was just made visible were rendered
+        // into a 0x0 (display:none) container, so they need an explicit resize
+        // once the tab becomes visible - a generic window resize event is not
+        // enough to fix this.
+        (tabChartIds[name] || []).forEach(id => {{
+            const el = document.getElementById(id);
+            if (el && window.Plotly) {{
+                try {{ Plotly.Plots.resize(el); }} catch (e) {{ /* chart not ready yet */ }}
+            }}
+        }});
         window.dispatchEvent(new Event('resize'));
     }}
     document.getElementById('strikeToggleBar').style.display = 'none';
+    // Make sure the Overview tab's charts are sized correctly on first load too.
+    (tabChartIds.overview || []).forEach(id => {{
+        const el = document.getElementById(id);
+        if (el && window.Plotly) {{
+            try {{ Plotly.Plots.resize(el); }} catch (e) {{ /* chart not ready yet */ }}
+        }}
+    }});
 
     // --- Strike toggle (shared across IV / Theta / Vega / Gamma tabs) ---
     const metricChartIds = ['ivChart', 'thetaChart', 'vegaChart', 'gammaChart', 'theta15Chart'];
@@ -1286,8 +1313,6 @@ def fetch_and_enrich_strike(fyers, strike, spot_df):
     pe_df = fetch_candles(fyers, pe_symbol, TARGET_DATE)
 
     return enrich_ce_pe(ce_df, pe_df, spot_df, strike)
-
-    return merged
 
 # --- MAIN ---
 
