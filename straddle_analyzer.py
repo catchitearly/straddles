@@ -831,7 +831,7 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
     # Convert all IV series from raw (0–1) to % for display (iv_ce is a fraction from implied_vol)
     for _fig in (fig_ce_iv, fig_pe_iv):
         for _trace in _fig.data:
-            _trace.y = [v * 100.0 if v == v and v is not None else v for v in (_trace.y or [])]
+            _trace.y = [v * 100.0 if (v is not None and v == v) else v for v in (_trace.y if _trace.y is not None else [])]
 
     # OTM label strings and Plotly HTML for the f-string
     ce_otm_label   = ", ".join(str(s) for s in ce_otm_strikes) if ce_otm_strikes else "none"
