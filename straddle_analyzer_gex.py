@@ -21,8 +21,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 TARGET_DATE = os.getenv("TARGET_DATE") or datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
-EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26707")  # Update as needed (Fyers symbol expiry code)
-EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-07-07")  # Update as needed - actual calendar expiry date, must match EXPIRY above
+EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26714")  # Update as needed (Fyers symbol expiry code)
+EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-07-14")  # Update as needed - actual calendar expiry date, must match EXPIRY above
 EXPIRY_TIME = "15:30"  # Market close time on expiry day
 RISK_FREE_RATE = 0.065  # Annualised risk-free rate used for Black-Scholes / IV solving
 SPOT_SYMBOL = "NSE:NIFTY50-INDEX"
