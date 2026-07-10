@@ -838,6 +838,7 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
     pe_otm_label   = ", ".join(str(s) for s in pe_otm_strikes) if pe_otm_strikes else "none"
 
     _pjs = False   # plotlyjs already loaded by cdn in fig_rank
+    _pcfg = {"responsive": True}   # must be defined before any .to_html() calls below
     ce_price_html   = fig_ce_price.to_html(  full_html=False, include_plotlyjs=_pjs, div_id="cePriceChart",   config=_pcfg)
     ce_iv_html      = fig_ce_iv.to_html(     full_html=False, include_plotlyjs=_pjs, div_id="ceIvChart",      config=_pcfg)
     ce_theta_html   = fig_ce_theta.to_html(  full_html=False, include_plotlyjs=_pjs, div_id="ceThetaChart",   config=_pcfg)
@@ -847,7 +848,6 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
     pe_theta_html   = fig_pe_theta.to_html(  full_html=False, include_plotlyjs=_pjs, div_id="peThetaChart",   config=_pcfg)
     pe_theta15_html = fig_pe_theta15.to_html(full_html=False, include_plotlyjs=_pjs, div_id="peTheta15Chart", config=_pcfg)
 
-    _pcfg = {"responsive": True}
     final_html = f"""<!DOCTYPE html>
 <html>
 <head>
