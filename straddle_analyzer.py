@@ -790,72 +790,60 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
     ])
 
     # ── OTM Analysis figures ──────────────────────────────────────────────────
-    # CE OTM = strikes ABOVE ATM  → CE leg: price, IV, Theta, 15-min Theta
-    # PE OTM = strikes BELOW ATM  → PE leg: price, IV, Theta, 15-min Theta
+    # CE OTM = strikes ABOVE ATM  → show CE leg: price, IV, Theta, 15-min Theta
+    # PE OTM = strikes BELOW ATM  → show PE leg: price, IV, Theta, 15-min Theta
     ce_otm_strikes = [s for s in strikes if s > atm]
     pe_otm_strikes = [s for s in strikes if s < atm]
 
-    logger.info(f"OTM strikes — CE: {ce_otm_strikes}  PE: {pe_otm_strikes}")
-    # Log available columns for the first strike so we can confirm theta_ce etc. exist
-    if strikes:
-        _sample_df = straddle_data[strikes[0]]
-        logger.info(f"straddle_data columns: {list(_sample_df.columns)}")
-
-    _pcfg = {"responsive": True}
-    _pjs  = False   # Plotly.js loaded via CDN by fig_rank above
-
-    def _build_otm_fig(sd, strike_list, col, title, yaxis_title, scale=1.0):
-        """
-        Build a Plotly figure for one OTM group.
-        sd          : the straddle_data dict (passed explicitly — no closure risk)
-        strike_list : list of strikes to plot
-        col         : column name in each strike's DataFrame
-        scale       : multiply y values (use 100.0 to convert IV fraction → %)
-        """
+    def _otm_fig(strike_list, col, title, yaxis_title, data_col_key):
+        """Build a Plotly figure for one OTM group + one metric column."""
         fig = go.Figure()
-        for idx, s in enumerate(strike_list):
-            df = sd.get(s)
-            if df is None:
-                logger.warning(f"_build_otm_fig: strike {s} not in straddle_data")
+        for idx, strike in enumerate(strike_list):
+            df    = straddle_data[strike]
+            if data_col_key not in df.columns:
                 continue
-            if col not in df.columns:
-                logger.warning(f"_build_otm_fig: column {col!r} missing for strike {s}. "
-                               f"Available: {list(df.columns)}")
-                continue
-            times  = df["time"].tolist()
-            raw_y  = df[col].tolist()
-            y_vals = [v * scale if (v is not None and v == v) else None for v in raw_y]
-            color  = STRIKE_COLORS[idx % len(STRIKE_COLORS)]
+            color = STRIKE_COLORS[idx % len(STRIKE_COLORS)]
             fig.add_trace(go.Scatter(
-                x=times, y=y_vals,
-                name=str(s),
+                x=df["time"], y=df[data_col_key],
+                name=str(strike),
                 line=dict(color=color, width=2),
-                connectgaps=False,
+                hovertemplate=f"Strike {strike}<br>%{{x}}<br>{yaxis_title}: %{{y:.4f}}<extra></extra>",
             ))
         fig.update_layout(
-            title=title, template="plotly_dark",
-            paper_bgcolor=CARD, plot_bgcolor=CARD,
-            height=380, yaxis_title=yaxis_title,
-            margin=dict(l=10, r=10, t=45, b=10),
+            title=title, template="plotly_dark", paper_bgcolor=CARD, plot_bgcolor=CARD,
+            height=380, yaxis_title=yaxis_title, margin=dict(l=10, r=10, t=45, b=10),
             legend=dict(orientation="h", y=-0.20),
         )
         return fig
 
-    # CE OTM charts (iv_ce is a 0–1 fraction → scale=100 to get %)
-    fig_ce_price   = _build_otm_fig(straddle_data, ce_otm_strikes, "close_x",       "CE OTM — Price (₹)",                           "CE Price (₹)")
-    fig_ce_iv      = _build_otm_fig(straddle_data, ce_otm_strikes, "iv_ce",         "CE OTM — Implied Volatility (%)",               "IV (%)",       scale=100.0)
-    fig_ce_theta   = _build_otm_fig(straddle_data, ce_otm_strikes, "theta_ce",      "CE OTM — Theta (₹/day)",                        "Theta (₹/day)")
-    fig_ce_theta15 = _build_otm_fig(straddle_data, ce_otm_strikes, "theta_ce_15min",f"CE OTM — Trailing {THETA_WINDOW_MINUTES}-min Theta (₹)", f"Theta (₹/{THETA_WINDOW_MINUTES}min)")
+    # CE OTM: 4 charts
+    fig_ce_price    = _otm_fig(ce_otm_strikes, "close_x", "CE OTM — Price (₹)",              "CE Price (₹)",    "close_x")
+    fig_ce_iv       = _otm_fig(ce_otm_strikes, "iv_ce",   "CE OTM — Implied Volatility (%)",  "IV (%)",          "iv_ce")
+    fig_ce_theta    = _otm_fig(ce_otm_strikes, "theta_ce", "CE OTM — Theta (₹/day)",          "Theta (₹/day)",   "theta_ce")
+    fig_ce_theta15  = _otm_fig(ce_otm_strikes, "theta_ce_15min", f"CE OTM — Trailing {THETA_WINDOW_MINUTES}-min Theta (₹)", "Theta (₹/15min)", "theta_ce_15min")
 
-    # PE OTM charts
-    fig_pe_price   = _build_otm_fig(straddle_data, pe_otm_strikes, "close_y",       "PE OTM — Price (₹)",                           "PE Price (₹)")
-    fig_pe_iv      = _build_otm_fig(straddle_data, pe_otm_strikes, "iv_pe",         "PE OTM — Implied Volatility (%)",               "IV (%)",       scale=100.0)
-    fig_pe_theta   = _build_otm_fig(straddle_data, pe_otm_strikes, "theta_pe",      "PE OTM — Theta (₹/day)",                        "Theta (₹/day)")
-    fig_pe_theta15 = _build_otm_fig(straddle_data, pe_otm_strikes, "theta_pe_15min",f"PE OTM — Trailing {THETA_WINDOW_MINUTES}-min Theta (₹)", f"Theta (₹/{THETA_WINDOW_MINUTES}min)")
+    # PE OTM: 4 charts
+    fig_pe_price    = _otm_fig(pe_otm_strikes, "close_y", "PE OTM — Price (₹)",              "PE Price (₹)",    "close_y")
+    fig_pe_iv       = _otm_fig(pe_otm_strikes, "iv_pe",   "PE OTM — Implied Volatility (%)",  "IV (%)",          "iv_pe")
+    fig_pe_theta    = _otm_fig(pe_otm_strikes, "theta_pe", "PE OTM — Theta (₹/day)",          "Theta (₹/day)",   "theta_pe")
+    fig_pe_theta15  = _otm_fig(pe_otm_strikes, "theta_pe_15min", f"PE OTM — Trailing {THETA_WINDOW_MINUTES}-min Theta (₹)", "Theta (₹/15min)", "theta_pe_15min")
 
+    # Convert all IV series from raw (0–1) to % for display (iv_ce is a fraction from implied_vol)
+    for _fig in (fig_ce_iv, fig_pe_iv):
+        for _trace in _fig.data:
+            _trace.y = [v * 100.0 if (v is not None and v == v) else v for v in (_trace.y if _trace.y is not None else [])]
+
+    # OTM label strings and Plotly HTML for the f-string
     ce_otm_label   = ", ".join(str(s) for s in ce_otm_strikes) if ce_otm_strikes else "none"
     pe_otm_label   = ", ".join(str(s) for s in pe_otm_strikes) if pe_otm_strikes else "none"
 
+    # Plotly.js is embedded once (include_plotlyjs=True) in the very first chart
+    # rendered in the page (the ranking bar chart in the Overview tab), and every
+    # other figure on the page reuses that same library copy via include_plotlyjs=False.
+    # Using True here (rather than 'cdn') makes the whole dashboard self-contained,
+    # so charts render even with no internet access / a blocked CDN domain.
+    _pjs = False   # plotlyjs already embedded by the fig_rank chart above
+    _pcfg = {"responsive": True}   # must be defined before any .to_html() calls below
     ce_price_html   = fig_ce_price.to_html(  full_html=False, include_plotlyjs=_pjs, div_id="cePriceChart",   config=_pcfg)
     ce_iv_html      = fig_ce_iv.to_html(     full_html=False, include_plotlyjs=_pjs, div_id="ceIvChart",      config=_pcfg)
     ce_theta_html   = fig_ce_theta.to_html(  full_html=False, include_plotlyjs=_pjs, div_id="ceThetaChart",   config=_pcfg)
@@ -950,7 +938,7 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
             <div class="sidebar">
                 <div class="card">
                     <h2>SMOOTHNESS RANKING</h2>
-                    {fig_rank.to_html(full_html=False, include_plotlyjs='cdn')}
+                    {fig_rank.to_html(full_html=False, include_plotlyjs=True, div_id='rankChart')}
                 </div>
                 <div class="card">
                     <h2>STATISTICS TABLE</h2>
@@ -968,7 +956,7 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
                         <span class="legend-item"><span class="legend-line legend-dashed"></span> VWAP</span>
                         <span class="legend-item"><span class="legend-line legend-ema"></span> EMA 9</span>
                     </div>
-                    {fig_main.to_html(full_html=False, include_plotlyjs=False)}
+                    {fig_main.to_html(full_html=False, include_plotlyjs=False, div_id='mainChart')}
                 </div>
             </div>
         </div>
@@ -1185,15 +1173,44 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
     updateTable();
 
     const metricTabs = ['iv', 'theta', 'vega', 'gamma', 'theta15'];
+    const tabChartIds = {{
+        overview:    ['rankChart', 'mainChart'],
+        iv:          ['ivChart'],
+        theta:       ['thetaChart'],
+        vega:        ['vegaChart'],
+        gamma:       ['gammaChart'],
+        theta15:     ['theta15Chart'],
+        gex:         ['gexChart'],
+        gexcombined: ['gexCombinedChart'],
+        otm:         ['cePriceChart', 'ceIvChart', 'ceThetaChart', 'ceTheta15Chart',
+                       'pePriceChart', 'peIvChart', 'peThetaChart', 'peTheta15Chart']
+    }};
     function showTab(name) {{
         document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
         document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
         document.getElementById('tab-' + name).classList.add('active');
         document.getElementById('btn-' + name).classList.add('active');
         document.getElementById('strikeToggleBar').style.display = metricTabs.includes(name) ? 'flex' : 'none';
+        // Plotly charts inside a tab that was just made visible were rendered
+        // into a 0x0 (display:none) container, so they need an explicit resize
+        // once the tab becomes visible - a generic window resize event alone
+        // is not enough to fix this for every browser/Plotly version.
+        (tabChartIds[name] || []).forEach(id => {{
+            const el = document.getElementById(id);
+            if (el && window.Plotly) {{
+                try {{ Plotly.Plots.resize(el); }} catch (e) {{ /* chart not ready yet */ }}
+            }}
+        }});
         window.dispatchEvent(new Event('resize'));
     }}
     document.getElementById('strikeToggleBar').style.display = 'none';
+    // Make sure the Overview tab's charts are sized correctly on first load too.
+    (tabChartIds.overview || []).forEach(id => {{
+        const el = document.getElementById(id);
+        if (el && window.Plotly) {{
+            try {{ Plotly.Plots.resize(el); }} catch (e) {{ /* chart not ready yet */ }}
+        }}
+    }});
 
     const metricChartIds = ['ivChart', 'thetaChart', 'vegaChart', 'gammaChart', 'theta15Chart'];
     function toggleStrike(idx, checked) {{
