@@ -20,7 +20,7 @@ TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-TARGET_DATE = os.getenv("TARGET_DATE") or "2026-07-10"  #datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
+TARGET_DATE = os.getenv("TARGET_DATE") or datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
 EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26714")
 EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-07-14")
 EXPIRY_TIME = "15:30"
