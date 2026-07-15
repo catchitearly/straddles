@@ -21,18 +21,18 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 TARGET_DATE = os.getenv("TARGET_DATE") or datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
-EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26714")
-EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-07-14")
+EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26721")
+EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-07-21")
 EXPIRY_TIME = "15:30"
-RISK_FREE_RATE = 0.065
+RISK_FREE_RATE = 0.1
 SPOT_SYMBOL = "NSE:NIFTY50-INDEX"
 STRIKE_STEP = 100
-FALLBACK_ATM = 24300
+FALLBACK_ATM = 24000
 CANDLE_INTERVAL_MINUTES = 5
 THETA_WINDOW_MINUTES = 15
 OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 
-LOT_SIZE = 75
+LOT_SIZE = 65
 GEX_STRIKE_COUNT = 40
 GEX_SCALE = 1e7
 GEX_SPOT_RANGE_POINTS = 1000
@@ -48,7 +48,7 @@ GEX_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_history_{TARGET_DATE}.json")
 # Weekly expiry codes to combine for the "Combined GEX" tab.
 # Format: Fyers weekly symbol codes (YYMDD) or monthly codes (YYMMM).
 # Update each week as expiries roll.
-GEX_MULTI_EXPIRY_CODES = ["26JUL", "26714", "26721"]
+GEX_MULTI_EXPIRY_CODES = ["26JUL", "26804", "26721"]
 GEX_COMBINED_HISTORY_FILE = os.path.join(OUTPUT_DIR, f"gex_combined_history_{TARGET_DATE}.json")
 GEX_COMBINED_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_combined_history_{TARGET_DATE}.json")
 
