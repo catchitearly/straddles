@@ -36,8 +36,8 @@ OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 # resetting fresh each session — this gives the rolling VWAP more volume
 # history to average over, which smooths out the noisy first minutes of each
 # session and produces a more stable, less choppy VWAP line for today.
-VWAP_LOOKBACK_TRADING_DAYS = 3       # trading days INCLUDING today used for the rolling straddle VWAP
-VWAP_LOOKBACK_CALENDAR_BUFFER = 12   # calendar days to request from the API to safely cover N trading days (weekends/holidays)
+VWAP_LOOKBACK_TRADING_DAYS = 2       # trading days INCLUDING today used for the rolling straddle VWAP
+VWAP_LOOKBACK_CALENDAR_BUFFER = 3   # calendar days to request from the API to safely cover N trading days (weekends/holidays)
 
 LOT_SIZE = 65
 GEX_STRIKE_COUNT = 40
