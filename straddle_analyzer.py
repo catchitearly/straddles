@@ -36,8 +36,8 @@ OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 # resetting fresh each session — this gives the rolling VWAP more volume
 # history to average over, which smooths out the noisy first minutes of each
 # session and produces a more stable, less choppy VWAP line for today.
-VWAP_LOOKBACK_TRADING_DAYS = 2       # trading days INCLUDING today used for the rolling straddle VWAP
-VWAP_LOOKBACK_CALENDAR_BUFFER = 3   # calendar days to request from the API to safely cover N trading days (weekends/holidays)
+VWAP_LOOKBACK_TRADING_DAYS = 3       # trading days INCLUDING today used for the rolling straddle VWAP
+VWAP_LOOKBACK_CALENDAR_BUFFER = 12   # calendar days to request from the API to safely cover N trading days (weekends/holidays)
 
 LOT_SIZE = 65
 GEX_STRIKE_COUNT = 40
@@ -1380,16 +1380,17 @@ def enrich_ce_pe(ce_df, pe_df, spot_df, strike, target_date=TARGET_DATE,
     """Compute straddle, VWAP, EMA9, IV, Greeks and trailing Theta from CE/PE candles.
 
     ce_df/pe_df may span several trading days (see get_lookback_date_range).
-    VWAP is a TRAILING ROLLING window over the last `lookback_trading_days`
-    trading days (not an expanding cumulative sum from day 1 of the window).
-    An expanding sum would mean that, by the time you reach today's candles,
-    the denominator already contains 1-2 full prior days of volume — so
-    today's price action barely moves the line and it looks flat/disconnected
-    from price. A rolling window keeps VWAP anchored to "the last N trading
-    days as of right now" at every candle, so it stays responsive throughout
-    today while still smoothed by the extra history. The result is then
-    trimmed down to just target_date rows before Greeks are computed (keeps
-    compute cost down and matches what the dashboard displays for "today").
+    VWAP is a standard SESSION VWAP — it resets at the start of every trading
+    day (the industry-standard definition, and what any broker/charting
+    platform shows). Blending multiple days into one running average makes
+    the line barely move during the day (today's volume gets diluted by 1-2
+    full prior days already sitting in the sum), so each day gets its own
+    independent cumulative VWAP. The extra lookback days are still fetched
+    and used to warm-start EMA9 (avoids the cold-start jump/lag EMA9 would
+    otherwise show in the first few candles of the session). The result is
+    then trimmed down to just target_date rows before Greeks are computed
+    (keeps compute cost down and matches what the dashboard displays for
+    "today").
     """
     if ce_df.empty or pe_df.empty:
         return None
@@ -1407,21 +1408,18 @@ def enrich_ce_pe(ce_df, pe_df, spot_df, strike, target_date=TARGET_DATE,
     merged['straddle'] = merged['close_x'] + merged['close_y']
     merged['v']        = merged['volume_x'] + merged['volume_y']
 
-    # Trailing rolling-window VWAP over `lookback_trading_days` trading days.
-    # Window width is measured in candles (not calendar time) so it isn't
-    # skewed by weekends/holidays: estimate candles-per-day from the data
-    # actually returned, then roll over lookback_trading_days worth of them.
-    n_days_present  = merged['date'].nunique() or 1
-    candles_per_day = max(1, round(len(merged) / n_days_present))
-    roll_window     = max(1, candles_per_day * lookback_trading_days)
-    pv              = merged['straddle'] * merged['v']
-    pv_roll         = pv.rolling(window=roll_window, min_periods=1).sum()
-    vol_roll        = merged['v'].rolling(window=roll_window, min_periods=1).sum()
-    merged['vwap']  = pv_roll / vol_roll.replace(0, np.nan)
-    merged['ema9']  = merged['straddle'].ewm(span=9, adjust=False).mean()
+    # Session VWAP: cumulative sum WITHIN each date group only, so it resets
+    # every trading day instead of blending across days.
+    pv      = merged['straddle'] * merged['v']
+    pv_cum  = pv.groupby(merged['date']).cumsum()
+    vol_cum = merged['v'].groupby(merged['date']).cumsum()
+    merged['vwap'] = pv_cum / vol_cum.replace(0, np.nan)
 
-    # Trim to target_date only for display/Greeks — vwap/ema9 values above already
-    # carry the influence of the earlier lookback days.
+    # EMA9 uses the full multi-day window as a warm start (reduces the "cold
+    # start" lag you'd otherwise see in the first few candles of the session).
+    merged['ema9'] = merged['straddle'].ewm(span=9, adjust=False).mean()
+
+    # Trim to target_date only for display/Greeks.
     merged = merged[merged['date'] == target_d].drop(columns=['date']).reset_index(drop=True)
     if merged.empty:
         return None
