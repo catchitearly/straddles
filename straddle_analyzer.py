@@ -59,6 +59,23 @@ GEX_MULTI_EXPIRY_CODES = ["26JUL", "26804", "26721"]
 GEX_COMBINED_HISTORY_FILE = os.path.join(OUTPUT_DIR, f"gex_combined_history_{TARGET_DATE}.json")
 GEX_COMBINED_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_combined_history_{TARGET_DATE}.json")
 
+# =============================================================================
+# BASKET STRATEGY: short a 3-strike straddle basket (N-100, N, N+100) when its
+# combined premium is below its combined VWAP, cover on VWAP reclaim, a
+# trailing ATR(2) stop, or forced EOD square-off.
+# =============================================================================
+BASKET_OFFSETS              = [-100, 0, 100]   # strikes relative to N
+BASKET_STRIKE_SAMPLE_TIME   = "09:40"          # NIFTY close sampled at/after this time -> rounded to N
+BASKET_ENTRY_START_TIME     = "09:45"          # earliest an entry can be taken
+BASKET_ENTRY_CUTOFF_TIME    = "14:30"          # no new entries after this time
+BASKET_EOD_EXIT_TIME        = "15:15"          # force-close any open trade at this time
+BASKET_ATR_PERIOD           = 2                # ATR lookback, in candles
+BASKET_ATR_MULTIPLIER       = 2.0              # trailing stop = trailing extreme +/- multiplier * ATR
+BASKET_MAX_TRADES_PER_DAY   = 3
+
+BASKET_STATE_FILE      = os.path.join(OUTPUT_DIR, f"basket_state_{TARGET_DATE}.json")
+BASKET_STATE_DOCS_FILE = os.path.join("docs", f"basket_state_{TARGET_DATE}.json")
+
 # Dashboard Styling
 BG = "#0b0f1a"
 CARD = "#111b27"
@@ -686,6 +703,257 @@ def update_combined_gex_and_get_history(fyers, fallback_spot, expiry_codes=None)
         logger.error(f"Combined GEX computation failed: {e}", exc_info=True)
     return history
 
+# =============================================================================
+# BASKET STRATEGY ENGINE
+# =============================================================================
+# Basket = 3 straddles (N-100, N, N+100), N = NIFTY close at/after 09:40
+# rounded to the nearest 100. Combined premium = sum of all 6 option legs'
+# closes. Combined VWAP is computed as ONE synthetic-instrument VWAP on that
+# summed price series, weighted by the summed volume of all 6 legs (resets
+# each session, same convention as the per-strike VWAP elsewhere).
+#
+# SHORT entry: combined premium < combined VWAP — either the first check at
+# 09:45 if already true, or any later fresh cross from above to below VWAP,
+# up to 14:30, capped at BASKET_MAX_TRADES_PER_DAY, one position open at a time.
+#
+# Exit (short, so favourable move is DOWN):
+#   - premium crosses back ABOVE VWAP  -> exit ("VWAP_CROSS")
+#   - premium crosses back ABOVE the trailing ATR(2) stop -> exit ("TRAIL_ATR_STOP")
+#     stop = (lowest premium since entry) + BASKET_ATR_MULTIPLIER * ATR(2)
+#   - 15:15 forced square-off -> exit ("EOD_SQUAREOFF")
+
+def determine_basket_center_strike(spot_df, sample_time_str=BASKET_STRIKE_SAMPLE_TIME, step=STRIKE_STEP):
+    """NIFTY close at/after sample_time_str, rounded to nearest `step`. Returns None if unavailable."""
+    if spot_df.empty:
+        return None
+    sample_time = dtime.fromisoformat(sample_time_str)
+    candidates = spot_df[spot_df["time"].dt.time >= sample_time]
+    row = candidates.iloc[0] if not candidates.empty else spot_df.iloc[-1]
+    price = row.get("spot", row.get("close"))
+    if price is None or price != price:
+        return None
+    return int(round(price / step) * step)
+
+def fetch_basket_leg_candles(fyers, strike, target_date):
+    """Fetch CE+PE candles (time, close, high, low, volume) for one basket strike."""
+    ce_symbol = f"NSE:NIFTY{EXPIRY}{strike}CE"
+    pe_symbol = f"NSE:NIFTY{EXPIRY}{strike}PE"
+    ce_df = fetch_candles(fyers, ce_symbol, target_date)
+    pe_df = fetch_candles(fyers, pe_symbol, target_date)
+    if ce_df.empty or pe_df.empty:
+        return None
+    cols = ["time", "close", "high", "low", "volume"]
+    merged = pd.merge(ce_df[cols], pe_df[cols], on="time", suffixes=("_ce", "_pe"))
+    return merged
+
+def build_basket_dataframe(fyers, target_date, spot_df, offsets=BASKET_OFFSETS):
+    """Determine N, fetch all 3 basket strikes' legs, and build the combined
+    (synthetic single-instrument) basket price/VWAP/ATR(2) series.
+    Returns (basket_df, N) or (None, None) if data is unavailable.
+    """
+    N = determine_basket_center_strike(spot_df)
+    if N is None:
+        logger.warning("Basket: could not determine center strike N (no spot data).")
+        return None, None
+
+    leg_frames = []
+    for offset in offsets:
+        strike = N + offset
+        leg_df = fetch_basket_leg_candles(fyers, strike, target_date)
+        if leg_df is None:
+            logger.warning(f"Basket: no data for strike {strike} — skipping basket build.")
+            return None, N
+        leg_frames.append(leg_df.set_index("time"))
+
+    # Align all 3 strikes on common timestamps, then sum across the 6 legs.
+    common_index = leg_frames[0].index
+    for lf in leg_frames[1:]:
+        common_index = common_index.intersection(lf.index)
+    if len(common_index) == 0:
+        logger.warning("Basket: no overlapping timestamps across the 3 strikes.")
+        return None, N
+    common_index = common_index.sort_values()
+
+    basket_close = sum(lf.loc[common_index, "close_ce"] + lf.loc[common_index, "close_pe"] for lf in leg_frames)
+    basket_high  = sum(lf.loc[common_index, "high_ce"]  + lf.loc[common_index, "high_pe"]  for lf in leg_frames)
+    basket_low   = sum(lf.loc[common_index, "low_ce"]   + lf.loc[common_index, "low_pe"]   for lf in leg_frames)
+    basket_vol   = sum(lf.loc[common_index, "volume_ce"] + lf.loc[common_index, "volume_pe"] for lf in leg_frames)
+
+    basket_df = pd.DataFrame({
+        "time": common_index, "close": basket_close.values, "high": basket_high.values,
+        "low": basket_low.values, "volume": basket_vol.values,
+    }).reset_index(drop=True)
+
+    # Session VWAP on the combined basket (single synthetic instrument).
+    pv = basket_df["close"] * basket_df["volume"]
+    basket_df["vwap"] = pv.cumsum() / basket_df["volume"].cumsum().replace(0, np.nan)
+
+    # ATR(2) on the combined basket (true range from summed high/low/close).
+    prev_close = basket_df["close"].shift(1)
+    tr = pd.concat([
+        basket_df["high"] - basket_df["low"],
+        (basket_df["high"] - prev_close).abs(),
+        (basket_df["low"] - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    basket_df["atr2"] = tr.rolling(window=BASKET_ATR_PERIOD, min_periods=1).mean()
+
+    return basket_df, N
+
+def run_basket_strategy(basket_df):
+    """Simulate the short-the-dip-below-VWAP strategy over basket_df.
+    Returns (trades, open_position, basket_df_with_pnl).
+    trades: list of completed-trade dicts.
+    open_position: dict if a trade is still open at the end of the data, else None.
+    """
+    if basket_df is None or basket_df.empty:
+        return [], None, basket_df
+
+    entry_start  = dtime.fromisoformat(BASKET_ENTRY_START_TIME)
+    entry_cutoff = dtime.fromisoformat(BASKET_ENTRY_CUTOFF_TIME)
+    eod_time     = dtime.fromisoformat(BASKET_EOD_EXIT_TIME)
+
+    trades = []
+    position = None
+    total_entries = 0
+    prev_below = None
+    entry_window_started = False
+
+    realized_cum = 0.0
+    pnl_points_series = []
+    realized_points_series = []
+
+    for _, row in basket_df.iterrows():
+        t = row["time"].time()
+        price = row["close"]
+        vwap = row["vwap"]
+        atr = row["atr2"] if row["atr2"] == row["atr2"] else 0.0
+        below = (price < vwap) if (price == price and vwap == vwap) else None
+
+        # ---- manage an open position first ----
+        if position is not None:
+            position["trailing_low"] = min(position["trailing_low"], price)
+            candidate_stop = position["trailing_low"] + BASKET_ATR_MULTIPLIER * atr
+            # Ratchet only: the stop must never loosen (move up) once tightened,
+            # even if ATR itself later expands on a volatile candle.
+            position["stop_level"] = candidate_stop if position["stop_level"] is None \
+                else min(position["stop_level"], candidate_stop)
+            stop_level = position["stop_level"]
+
+            exit_reason = None
+            if t >= eod_time:
+                exit_reason = "EOD_SQUAREOFF"
+            elif vwap == vwap and price > vwap:
+                exit_reason = "VWAP_CROSS"
+            elif price > stop_level:
+                exit_reason = "TRAIL_ATR_STOP"
+
+            if exit_reason:
+                pnl_pts = position["entry_price"] - price   # SHORT: profit when price falls
+                trade = dict(position)
+                trade.update({
+                    "exit_time": row["time"], "exit_price": price, "exit_reason": exit_reason,
+                    "pnl_points": pnl_pts, "pnl_rupees": pnl_pts * LOT_SIZE,
+                })
+                trades.append(trade)
+                realized_cum += pnl_pts
+                position = None
+
+        # ---- check for a new entry (only if flat) ----
+        if (position is None and below and t >= entry_start and t <= entry_cutoff
+                and total_entries < BASKET_MAX_TRADES_PER_DAY):
+            fresh_cross = (not entry_window_started) or (prev_below is False)
+            if fresh_cross:
+                total_entries += 1
+                position = {
+                    "trade_no": total_entries, "entry_time": row["time"], "entry_price": price,
+                    "entry_vwap": vwap, "trailing_low": price,
+                    "stop_level": price + BASKET_ATR_MULTIPLIER * atr,
+                }
+
+        if t >= entry_start:
+            entry_window_started = True
+        prev_below = below
+
+        unrealized = (position["entry_price"] - price) if position is not None else 0.0
+        pnl_points_series.append(realized_cum + unrealized)
+        realized_points_series.append(realized_cum)
+
+    basket_df = basket_df.copy()
+    basket_df["pnl_points"] = pnl_points_series
+    basket_df["realized_pnl_points"] = realized_points_series
+    basket_df["pnl_rupees"] = basket_df["pnl_points"] * LOT_SIZE
+
+    return trades, position, basket_df
+
+# --- Basket state persistence (avoids duplicate Telegram alerts across reruns) ---
+
+def load_basket_state():
+    path = BASKET_STATE_DOCS_FILE if os.path.exists(BASKET_STATE_DOCS_FILE) else BASKET_STATE_FILE
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Could not read basket state ({path}): {e}")
+    return {"notified_entries": [], "notified_exits": []}
+
+def save_basket_state(state):
+    for path in (BASKET_STATE_FILE, BASKET_STATE_DOCS_FILE):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+        except Exception as e:
+            logger.warning(f"Could not write basket state ({path}): {e}")
+
+def _fmt_time(ts):
+    return ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
+
+def notify_basket_events(trades, open_position, N):
+    """Send Telegram alerts for any entry/exit not already notified in a prior run."""
+    state = load_basket_state()
+    notified_entries = set(state.get("notified_entries", []))
+    notified_exits   = set(state.get("notified_exits", []))
+
+    strikes_label = f"{N-100}/{N}/{N+100}"
+    all_positions = trades + ([open_position] if open_position else [])
+
+    for pos in sorted(all_positions, key=lambda p: p["entry_time"]):
+        key = _fmt_time(pos["entry_time"])
+        if key in notified_entries:
+            continue
+        send_telegram_message(
+            f"🔴 <b>BASKET SHORT ENTRY #{pos['trade_no']}</b>\n"
+            f"Strikes (CE+PE): <code>{strikes_label}</code>\n"
+            f"Time: {key}\n"
+            f"Premium: ₹{pos['entry_price']:.2f}  &lt;  VWAP: ₹{pos['entry_vwap']:.2f}"
+        )
+        notified_entries.add(key)
+
+    reason_labels = {
+        "VWAP_CROSS": "VWAP reclaim (cover)",
+        "TRAIL_ATR_STOP": f"Trailing ATR({BASKET_ATR_PERIOD}) stop x{BASKET_ATR_MULTIPLIER}",
+        "EOD_SQUAREOFF": "EOD square-off (15:15)",
+    }
+    for tr in sorted(trades, key=lambda t: t["exit_time"]):
+        key = _fmt_time(tr["exit_time"])
+        if key in notified_exits:
+            continue
+        emoji = "✅" if tr["pnl_points"] >= 0 else "❌"
+        reason = reason_labels.get(tr["exit_reason"], tr["exit_reason"])
+        send_telegram_message(
+            f"{emoji} <b>BASKET EXIT #{tr['trade_no']}</b> — {reason}\n"
+            f"Strikes (CE+PE): <code>{strikes_label}</code>\n"
+            f"Entry: ₹{tr['entry_price']:.2f} @ {_fmt_time(tr['entry_time'])}\n"
+            f"Exit:  ₹{tr['exit_price']:.2f} @ {key}\n"
+            f"PnL: {tr['pnl_points']:+.2f} pts  (₹{tr['pnl_rupees']:+,.0f})"
+        )
+        notified_exits.add(key)
+
+    save_basket_state({
+        "notified_entries": sorted(notified_entries),
+        "notified_exits": sorted(notified_exits),
+    })
+
 # --- DASHBOARD BUILDER ---
 
 def _metric_figure(straddle_data, strikes, atm, column, title, yaxis_title):
@@ -703,10 +971,12 @@ def _metric_figure(straddle_data, strikes, atm, column, title, yaxis_title):
     )
     return fig
 
-def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combined_gex_history=None):
+def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combined_gex_history=None,
+                          basket_df=None, basket_trades=None, basket_open_position=None, basket_N=None):
     strikes               = sorted(straddle_data.keys())
     gex_history           = gex_history or []
     combined_gex_history  = combined_gex_history or []
+    basket_trades         = basket_trades or []
 
     # ── Overview straddle subplots ────────────────────────────────────────────
     fig_main = make_subplots(
@@ -835,6 +1105,92 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
     fig_oi_diff.update_yaxes(title_text="NIFTY Price", secondary_y=False)
     fig_oi_diff.update_yaxes(title_text="Open Interest (contracts)", secondary_y=True)
 
+    # ── Basket strategy: price / VWAP / ATR(2) chart with entry-exit markers ──
+    fig_basket = go.Figure()
+    if basket_df is not None and not basket_df.empty:
+        fig_basket.add_trace(go.Scatter(x=basket_df["time"], y=basket_df["close"], name="Basket Premium",
+                                         line=dict(color=BLUE, width=2)))
+        fig_basket.add_trace(go.Scatter(x=basket_df["time"], y=basket_df["vwap"], name="Basket VWAP",
+                                         line=dict(color=ACCENT, width=1.5, dash="dot")))
+        fig_basket.add_trace(go.Scatter(x=basket_df["time"], y=basket_df["atr2"], name="ATR(2)",
+                                         line=dict(color=MUTED, width=1, dash="dash"), yaxis="y2"))
+
+        all_trades_for_markers = list(basket_trades) + ([basket_open_position] if basket_open_position else [])
+        if all_trades_for_markers:
+            entry_x = [p["entry_time"] for p in all_trades_for_markers]
+            entry_y = [p["entry_price"] for p in all_trades_for_markers]
+            fig_basket.add_trace(go.Scatter(
+                x=entry_x, y=entry_y, mode="markers", name="Short Entry",
+                marker=dict(symbol="triangle-down", size=13, color=RED, line=dict(width=1, color=TEXT)),
+                hovertemplate="Entry #%{text}<br>%{x}<br>₹%{y:.2f}<extra></extra>",
+                text=[p["trade_no"] for p in all_trades_for_markers],
+            ))
+        if basket_trades:
+            exit_x = [t["exit_time"] for t in basket_trades]
+            exit_y = [t["exit_price"] for t in basket_trades]
+            exit_colors = [ACCENT if t["pnl_points"] >= 0 else RED for t in basket_trades]
+            fig_basket.add_trace(go.Scatter(
+                x=exit_x, y=exit_y, mode="markers", name="Exit / Cover",
+                marker=dict(symbol="triangle-up", size=13, color=exit_colors, line=dict(width=1, color=TEXT)),
+                hovertemplate="Exit #%{text}<br>%{x}<br>₹%{y:.2f}<extra></extra>",
+                text=[t["trade_no"] for t in basket_trades],
+            ))
+    fig_basket.update_layout(
+        title=f"Basket Premium vs VWAP  |  Strikes {basket_N-100 if basket_N else '-'}/{basket_N or '-'}/{basket_N+100 if basket_N else '-'}",
+        template="plotly_dark", paper_bgcolor=CARD, plot_bgcolor=CARD,
+        height=520, margin=dict(l=10, r=10, t=50, b=10),
+        legend=dict(orientation="h", y=-0.15),
+        yaxis=dict(title="Basket Premium (₹)"),
+        yaxis2=dict(title="ATR(2)", overlaying="y", side="right", showgrid=False),
+    )
+
+    # ── Basket strategy: intraday PnL curve ───────────────────────────────────
+    fig_basket_pnl = go.Figure()
+    if basket_df is not None and not basket_df.empty and "pnl_rupees" in basket_df.columns:
+        pnl_colors = ["rgba(0,229,176,0.15)" if v >= 0 else "rgba(255,69,96,0.15)" for v in basket_df["pnl_rupees"]]
+        fig_basket_pnl.add_trace(go.Scatter(
+            x=basket_df["time"], y=basket_df["pnl_rupees"], name="Running PnL (₹)",
+            line=dict(color=ACCENT, width=2), fill="tozeroy", fillcolor="rgba(0,229,176,0.10)"
+        ))
+        fig_basket_pnl.add_trace(go.Scatter(
+            x=basket_df["time"], y=[0]*len(basket_df), line=dict(color=MUTED, width=1, dash="dot"), showlegend=False
+        ))
+    fig_basket_pnl.update_layout(
+        title="Basket Strategy — Running PnL (₹, mark-to-market)",
+        template="plotly_dark", paper_bgcolor=CARD, plot_bgcolor=CARD,
+        height=380, margin=dict(l=10, r=10, t=50, b=10),
+        legend=dict(orientation="h", y=-0.15), yaxis=dict(title="PnL (₹)"),
+    )
+
+    # ── Basket strategy: trade log table ───────────────────────────────────────
+    if basket_trades:
+        reason_labels = {
+            "VWAP_CROSS": "VWAP reclaim", "TRAIL_ATR_STOP": f"ATR({BASKET_ATR_PERIOD}) stop", "EOD_SQUAREOFF": "EOD",
+        }
+        basket_trade_rows_html = "".join([
+            f"""<tr style="border-bottom:1px solid {BORDER};">
+                <td style="padding:8px;">{t['trade_no']}</td>
+                <td style="padding:8px;">{t['entry_time'].strftime('%H:%M:%S')}</td>
+                <td style="padding:8px;">₹{t['entry_price']:.2f}</td>
+                <td style="padding:8px;">{t['exit_time'].strftime('%H:%M:%S')}</td>
+                <td style="padding:8px;">₹{t['exit_price']:.2f}</td>
+                <td style="padding:8px;">{reason_labels.get(t['exit_reason'], t['exit_reason'])}</td>
+                <td style="padding:8px;color:{ACCENT if t['pnl_points']>=0 else RED};font-weight:bold;">{t['pnl_points']:+.2f}</td>
+                <td style="padding:8px;color:{ACCENT if t['pnl_points']>=0 else RED};font-weight:bold;">₹{t['pnl_rupees']:+,.0f}</td>
+            </tr>""" for t in basket_trades
+        ])
+        total_pnl_rupees = sum(t["pnl_rupees"] for t in basket_trades)
+    else:
+        basket_trade_rows_html = f'<tr><td colspan="8" style="padding:12px;color:{MUTED};">No completed trades yet today.</td></tr>'
+        total_pnl_rupees = 0.0
+    if basket_open_position:
+        basket_trade_rows_html += f"""<tr style="border-bottom:1px solid {BORDER};background:{BORDER}22;">
+            <td style="padding:8px;">{basket_open_position['trade_no']}</td>
+            <td style="padding:8px;">{basket_open_position['entry_time'].strftime('%H:%M:%S')}</td>
+            <td style="padding:8px;">₹{basket_open_position['entry_price']:.2f}</td>
+            <td style="padding:8px;" colspan="5">🟡 OPEN</td>
+        </tr>"""
+
     # ── HTML helpers ──────────────────────────────────────────────────────────
     table_rows_html = "".join([
         f"""<tr style="border-bottom:1px solid {BORDER};">
@@ -845,11 +1201,6 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
             <td style="padding:10px;">{r['trend']}</td>
         </tr>""" for r in rankings
     ])
-
-    speed_data = {str(strike): [{"time": row["time"].strftime("%H:%M"), "price": round(row["straddle"], 2)}
-                  for _, row in df.iterrows()] for strike, df in straddle_data.items()}
-    ref_strike = list(speed_data.keys())[0]
-    all_times  = [d["time"] for d in speed_data[ref_strike]]
 
     toggle_items_html = "".join([
         f"""<label class="toggle-item">
@@ -997,7 +1348,7 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
         <button class="tab-btn"        id="btn-gexcombined" onclick="showTab('gexcombined')">COMBINED GEX</button>
         <button class="tab-btn"        id="btn-oidiff"      onclick="showTab('oidiff')">OI DIFFERENCE</button>
         <button class="tab-btn"        id="btn-otm"         onclick="showTab('otm')">OTM ANALYSIS</button>
-        <button class="tab-btn"        id="btn-momentum"    onclick="showTab('momentum')">MOMENTUM</button>
+        <button class="tab-btn"        id="btn-basket"      onclick="showTab('basket')">BASKET STRATEGY</button>
     </div>
 
     <div class="toggle-bar" id="strikeToggleBar">
@@ -1148,111 +1499,36 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
         </div>
     </div>
 
-    <div class="tab-content" id="tab-momentum">
-        <div class="speed-card">
-            <div class="speed-header">
-                <div>
-                    <h2 style="margin:0;">⚡ MULTI-WINDOW MOMENTUM</h2>
-                    <div style="color:{MUTED};font-size:12px;margin-top:4px;">Comparing 30-min vs 60-min volatility speed</div>
-                </div>
-                <div class="speed-controls">
-                    <div class="slider-group">
-                        <div class="slider-label">Reference Time (End of Window)</div>
-                        <input type="range" id="timeSlider" min="0" max="1" value="0" step="1">
-                        <div style="display:flex;justify-content:space-between;align-items:center;">
-                            <span class="slider-value" id="timeVal">--:--</span>
-                            <span style="font-size:12px;color:{MUTED};" id="timeDisplay"></span>
-                        </div>
-                    </div>
-                </div>
+    <div class="tab-content" id="tab-basket">
+        <div class="metric-card">
+            <div style="color:{MUTED};font-size:12px;margin-bottom:12px;">
+                Short a 3-strike straddle basket (N−100, N, N+100 — N = NIFTY close at/after 09:40, rounded to nearest 100).
+                Entry: combined premium below combined VWAP (09:45 check, or any fresh cross-under, until 14:30) — max {BASKET_MAX_TRADES_PER_DAY} trades/day.
+                Exit: VWAP reclaim, trailing ATR({BASKET_ATR_PERIOD}) stop (×{BASKET_ATR_MULTIPLIER}), or forced square-off at {BASKET_EOD_EXIT_TIME}.
             </div>
-            <div class="speed-table-wrap">
-                <table id="speedTable">
-                    <thead>
-                        <tr>
-                            <th rowspan="2">Strike</th>
-                            <th colspan="4" class="win-header" style="color:{ACCENT};">30 MINUTE WINDOW</th>
-                            <th colspan="4" class="win-header" style="color:{BLUE};">60 MINUTE WINDOW</th>
-                        </tr>
-                        <tr>
-                            <th>Dur</th><th>Speed</th><th>Smooth</th><th>Direction</th>
-                            <th>Dur</th><th>Speed</th><th>Smooth</th><th>Direction</th>
-                        </tr>
-                    </thead>
-                    <tbody id="speedTableBody"></tbody>
-                </table>
-            </div>
+            {fig_basket.to_html(full_html=False, include_plotlyjs=False, div_id='basketChart', config={'responsive': True})}
+        </div>
+        <div class="metric-card">
+            {fig_basket_pnl.to_html(full_html=False, include_plotlyjs=False, div_id='basketPnlChart', config={'responsive': True})}
+        </div>
+        <div class="card" style="margin:20px;">
+            <h2>TRADE LOG {f'&nbsp;&nbsp;<span style="color:{ACCENT if total_pnl_rupees>=0 else RED};">Total: ₹{total_pnl_rupees:+,.0f}</span>' if basket_trades else ''}</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th><th>Entry Time</th><th>Entry ₹</th><th>Exit Time</th><th>Exit ₹</th>
+                        <th>Exit Reason</th><th>PnL (pts)</th><th>PnL (₹)</th>
+                    </tr>
+                </thead>
+                <tbody>{basket_trade_rows_html}</tbody>
+            </table>
         </div>
     </div>
 
     <script>
-    const speedData = {json.dumps(speed_data)};
-    const allTimes  = {json.dumps(all_times)};
     const strikes   = {json.dumps([str(s) for s in strikes])};
     const colors    = {json.dumps(STRIKE_COLORS)};
     const ATM       = "{atm}";
-    const timeSlider  = document.getElementById('timeSlider');
-    const timeVal     = document.getElementById('timeVal');
-    const timeDisplay = document.getElementById('timeDisplay');
-    const tbody       = document.getElementById('speedTableBody');
-    timeSlider.max   = allTimes.length - 1;
-    timeSlider.value = allTimes.length - 1;
-
-    function calcStats(strike, tIdx, durationCandles) {{
-        const series  = speedData[strike];
-        const fromIdx = Math.max(0, tIdx - durationCandles);
-        const fromPt  = series[fromIdx];
-        const toPt    = series[tIdx];
-        if (!fromPt || !toPt) return null;
-        const mins  = (tIdx - fromIdx) * 5;
-        const delta = toPt.price - fromPt.price;
-        const speed = mins > 0 ? (delta / mins) : 0;
-        const slice = series.slice(fromIdx, tIdx + 1).map(d => d.price);
-        let net = Math.abs(slice[slice.length - 1] - slice[0]);
-        let total = 0;
-        for (let i = 1; i < slice.length; i++) total += Math.abs(slice[i] - slice[i-1]);
-        let smooth = total > 0 ? (net / total) * 100 : 100.0;
-        const dir   = delta > 2 ? 'UP' : delta < -2 ? 'DOWN' : 'FLAT';
-        const badge = dir === 'UP'   ? '<span class="badge badge-up">▲ UP</span>' :
-                      dir === 'DOWN' ? '<span class="badge badge-down">▼ DOWN</span>' :
-                                       '<span class="badge badge-flat">— FLAT</span>';
-        return {{
-            dur: mins + 'm',
-            speed: (speed >= 0 ? '+' : '') + speed.toFixed(2),
-            smooth: smooth.toFixed(1) + '%',
-            badge: badge,
-            speedColor: Math.abs(speed) > 5 ? (delta > 0 ? '{ACCENT}' : '{RED}') : '{TEXT}',
-            smoothColor: smooth > 70 ? '{ACCENT}' : smooth > 40 ? '{BLUE}' : '{RED}'
-        }};
-    }}
-
-    function updateTable() {{
-        const tIdx = parseInt(timeSlider.value);
-        timeVal.textContent     = allTimes[tIdx];
-        timeDisplay.textContent = `Analysis Window End: ${{allTimes[tIdx]}}`;
-        const rows = strikes.map((strike, idx) => {{
-            const s30 = calcStats(strike, tIdx, 6);
-            const s60 = calcStats(strike, tIdx, 12);
-            if (!s30 || !s60) return '';
-            const atmMark = strike === ATM ? ' <small style="color:{ACCENT}">ATM</small>' : '';
-            return `<tr>
-                <td style="font-weight:bold;border-right:1px solid {BORDER}44;">
-                    <span class="strike-dot" style="background:${{colors[idx % colors.length]}};"></span>${{strike}}${{atmMark}}
-                </td>
-                <td style="color:{MUTED}">${{s30.dur}}</td>
-                <td style="color:${{s30.speedColor}};font-weight:bold;">${{s30.speed}}</td>
-                <td style="color:${{s30.smoothColor}};">${{s30.smooth}}</td>
-                <td style="border-right:1px solid {BORDER}44;">${{s30.badge}}</td>
-                <td style="color:{MUTED}">${{s60.dur}}</td>
-                <td style="color:${{s60.speedColor}};font-weight:bold;">${{s60.speed}}</td>
-                <td style="color:${{s60.smoothColor}};">${{s60.smooth}}</td>
-                <td>${{s60.badge}}</td>
-            </tr>`;
-        }});
-        tbody.innerHTML = rows.join('');
-    }}
-    timeSlider.addEventListener('input', updateTable);
-    updateTable();
 
     const metricTabs = ['iv', 'theta', 'delta', 'gamma', 'theta15'];
     const tabChartIds = {{
@@ -1265,6 +1541,7 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
         gex:         ['gexChart'],
         gexcombined: ['gexCombinedChart'],
         oidiff:      ['oiDiffChart'],
+        basket:      ['basketChart', 'basketPnlChart'],
         otm:         ['cePriceChart', 'ceIvChart', 'ceThetaChart', 'ceTheta15Chart',
                        'pePriceChart', 'peIvChart', 'peThetaChart', 'peTheta15Chart']
     }};
@@ -1482,6 +1759,22 @@ def main():
         gex_history, gex_status = update_gex_and_get_history(fyers, fallback_spot)
         combined_gex_history     = update_combined_gex_and_get_history(fyers, fallback_spot)
 
+        # ── Basket strategy (short straddle basket below VWAP) ──────────────
+        basket_df, basket_trades, basket_open_position, basket_N = None, [], None, None
+        try:
+            basket_df, basket_N = build_basket_dataframe(fyers, TARGET_DATE, spot_df)
+            if basket_df is not None:
+                basket_trades, basket_open_position, basket_df = run_basket_strategy(basket_df)
+                notify_basket_events(basket_trades, basket_open_position, basket_N)
+                logger.info(
+                    f"✓ Basket strategy: N={basket_N}  trades={len(basket_trades)}  "
+                    f"open={'yes' if basket_open_position else 'no'}"
+                )
+            else:
+                logger.warning("Skipping basket strategy this run (no basket data).")
+        except Exception as e:
+            logger.error(f"Basket strategy computation failed: {e}", exc_info=True)
+
         results = {}
         successful_fetches = 0
         for offset in OFFSETS:
@@ -1498,7 +1791,9 @@ def main():
         if results:
             rankings = compute_rankings(results)
             docs_path, backup_path = build_dashboard_html(
-                results, atm, rankings, gex_history, combined_gex_history
+                results, atm, rankings, gex_history, combined_gex_history,
+                basket_df=basket_df, basket_trades=basket_trades,
+                basket_open_position=basket_open_position, basket_N=basket_N,
             )
             logger.info(f"✓ Dashboard generated: {docs_path}")
 
@@ -1510,12 +1805,24 @@ def main():
                     f"Gamma Flip (<b>{gex_status['flip']:.1f}</b>)  |  Net GEX: {gex_status['net_gex']/GEX_SCALE:.2f} Cr"
                 )
 
+            basket_status_line = ""
+            if basket_N:
+                open_pnl = basket_open_position['entry_price'] - basket_df['close'].iloc[-1] if (basket_open_position and basket_df is not None and not basket_df.empty) else None
+                total_realized = sum(t['pnl_rupees'] for t in basket_trades) if basket_trades else 0.0
+                basket_status_line = (
+                    f"\n🧺 Basket ({basket_N-100}/{basket_N}/{basket_N+100}): "
+                    f"{len(basket_trades)}/{BASKET_MAX_TRADES_PER_DAY} trades  |  Realized: ₹{total_realized:+,.0f}"
+                )
+                if open_pnl is not None:
+                    basket_status_line += f"  |  Open: {open_pnl:+.2f} pts"
+
             send_telegram_document(
                 docs_path,
                 caption=(
                     f"📊 <b>Straddle Dashboard</b> — {TARGET_DATE}\n"
                     f"Open in browser for interactive charts."
                     f"{gex_status_line}"
+                    f"{basket_status_line}"
                 )
             )
             logger.info(f"✓ Successfully processed {successful_fetches}/{len(OFFSETS)} strikes")
