@@ -20,7 +20,7 @@ TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-TARGET_DATE = os.getenv("TARGET_DATE") or "2026-07-16" #datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
+TARGET_DATE = os.getenv("TARGET_DATE") or "26-07-16" #datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
 EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26721")
 EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-07-21")
 EXPIRY_TIME = "15:30"
@@ -62,14 +62,14 @@ GEX_COMBINED_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_combined_history_{TA
 # =============================================================================
 # BASKET STRATEGY: short a 3-strike straddle basket (N-100, N, N+100) when its
 # combined premium is below its combined VWAP, cover on VWAP reclaim, a
-# trailing ATR(2) stop, or forced EOD square-off.
+# trailing ATR(14) stop, or forced EOD square-off.
 # =============================================================================
 BASKET_OFFSETS              = [-100, 0, 100]   # strikes relative to N
 BASKET_STRIKE_SAMPLE_TIME   = "09:40"          # NIFTY close sampled at/after this time -> rounded to N
 BASKET_ENTRY_START_TIME     = "09:45"          # earliest an entry can be taken
 BASKET_ENTRY_CUTOFF_TIME    = "14:30"          # no new entries after this time
 BASKET_EOD_EXIT_TIME        = "15:15"          # force-close any open trade at this time
-BASKET_ATR_PERIOD           = 2                # ATR lookback, in candles
+BASKET_ATR_PERIOD           = 14               # ATR lookback, in candles (5-min candles -> ~70 min lookback)
 BASKET_ATR_MULTIPLIER       = 2.0              # trailing stop = trailing extreme +/- multiplier * ATR
 BASKET_MAX_TRADES_PER_DAY   = 3
 
@@ -718,8 +718,9 @@ def update_combined_gex_and_get_history(fyers, fallback_spot, expiry_codes=None)
 #
 # Exit (short, so favourable move is DOWN):
 #   - premium crosses back ABOVE VWAP  -> exit ("VWAP_CROSS")
-#   - premium crosses back ABOVE the trailing ATR(2) stop -> exit ("TRAIL_ATR_STOP")
-#     stop = (lowest premium since entry) + BASKET_ATR_MULTIPLIER * ATR(2)
+#   - premium crosses back ABOVE the trailing ATR(BASKET_ATR_PERIOD) stop -> exit ("TRAIL_ATR_STOP")
+#     stop = (lowest premium since entry) + BASKET_ATR_MULTIPLIER * ATR(BASKET_ATR_PERIOD)
+#     ATR here uses a simplified True Range (abs close-to-close change only).
 #   - 15:15 forced square-off -> exit ("EOD_SQUAREOFF")
 
 def determine_basket_center_strike(spot_df, sample_time_str=BASKET_STRIKE_SAMPLE_TIME, step=STRIKE_STEP):
@@ -748,7 +749,7 @@ def fetch_basket_leg_candles(fyers, strike, target_date):
 
 def build_basket_dataframe(fyers, target_date, spot_df, offsets=BASKET_OFFSETS):
     """Determine N, fetch all 3 basket strikes' legs, and build the combined
-    (synthetic single-instrument) basket price/VWAP/ATR(2) series.
+    (synthetic single-instrument) basket price/VWAP/ATR series.
     Returns (basket_df, N) or (None, None) if data is unavailable.
     """
     N = determine_basket_center_strike(spot_df)
@@ -788,14 +789,12 @@ def build_basket_dataframe(fyers, target_date, spot_df, offsets=BASKET_OFFSETS):
     pv = basket_df["close"] * basket_df["volume"]
     basket_df["vwap"] = pv.cumsum() / basket_df["volume"].cumsum().replace(0, np.nan)
 
-    # ATR(2) on the combined basket (true range from summed high/low/close).
-    prev_close = basket_df["close"].shift(1)
-    tr = pd.concat([
-        basket_df["high"] - basket_df["low"],
-        (basket_df["high"] - prev_close).abs(),
-        (basket_df["low"] - prev_close).abs(),
-    ], axis=1).max(axis=1)
-    basket_df["atr2"] = tr.rolling(window=BASKET_ATR_PERIOD, min_periods=1).mean()
+    # ATR(BASKET_ATR_PERIOD) on the combined basket, using a simplified True
+    # Range (abs close-to-close change only, not full High-Low range). Warm-up
+    # bars before `period` candles of history exist just average whatever's
+    # available so far (rolling min_periods=1).
+    tr = basket_df["close"].diff().abs()
+    basket_df["atr"] = tr.rolling(window=BASKET_ATR_PERIOD, min_periods=1).mean()
 
     return basket_df, N
 
@@ -826,7 +825,7 @@ def run_basket_strategy(basket_df):
         t = row["time"].time()
         price = row["close"]
         vwap = row["vwap"]
-        atr = row["atr2"] if row["atr2"] == row["atr2"] else 0.0
+        atr = row["atr"] if row["atr"] == row["atr"] else 0.0
         below = (price < vwap) if (price == price and vwap == vwap) else None
 
         # ---- manage an open position first ----
@@ -1105,14 +1104,14 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
     fig_oi_diff.update_yaxes(title_text="NIFTY Price", secondary_y=False)
     fig_oi_diff.update_yaxes(title_text="Open Interest (contracts)", secondary_y=True)
 
-    # ── Basket strategy: price / VWAP / ATR(2) chart with entry-exit markers ──
+    # ── Basket strategy: price / VWAP / ATR chart with entry-exit markers ─────
     fig_basket = go.Figure()
     if basket_df is not None and not basket_df.empty:
         fig_basket.add_trace(go.Scatter(x=basket_df["time"], y=basket_df["close"], name="Basket Premium",
                                          line=dict(color=BLUE, width=2)))
         fig_basket.add_trace(go.Scatter(x=basket_df["time"], y=basket_df["vwap"], name="Basket VWAP",
                                          line=dict(color=ACCENT, width=1.5, dash="dot")))
-        fig_basket.add_trace(go.Scatter(x=basket_df["time"], y=basket_df["atr2"], name="ATR(2)",
+        fig_basket.add_trace(go.Scatter(x=basket_df["time"], y=basket_df["atr"], name=f"ATR({BASKET_ATR_PERIOD})",
                                          line=dict(color=MUTED, width=1, dash="dash"), yaxis="y2"))
 
         all_trades_for_markers = list(basket_trades) + ([basket_open_position] if basket_open_position else [])
@@ -1141,7 +1140,7 @@ def build_dashboard_html(straddle_data, atm, rankings, gex_history=None, combine
         height=520, margin=dict(l=10, r=10, t=50, b=10),
         legend=dict(orientation="h", y=-0.15),
         yaxis=dict(title="Basket Premium (₹)"),
-        yaxis2=dict(title="ATR(2)", overlaying="y", side="right", showgrid=False),
+        yaxis2=dict(title=f"ATR({BASKET_ATR_PERIOD})", overlaying="y", side="right", showgrid=False),
     )
 
     # ── Basket strategy: intraday PnL curve ───────────────────────────────────
