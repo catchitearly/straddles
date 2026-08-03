@@ -55,7 +55,7 @@ GEX_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_history_{TARGET_DATE}.json")
 # Weekly expiry codes to combine for the "Combined GEX" tab.
 # Format: Fyers weekly symbol codes (YYMDD) or monthly codes (YYMMM).
 # Update each week as expiries roll.
-GEX_MULTI_EXPIRY_CODES = ["26JUL", "26804", "26AUG"]
+GEX_MULTI_EXPIRY_CODES = ["26811", "26804", "26AUG"]
 GEX_COMBINED_HISTORY_FILE = os.path.join(OUTPUT_DIR, f"gex_combined_history_{TARGET_DATE}.json")
 GEX_COMBINED_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_combined_history_{TARGET_DATE}.json")
 
