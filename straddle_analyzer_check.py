@@ -21,8 +21,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 TARGET_DATE = os.getenv("TARGET_DATE") or datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
-EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26804")
-EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-08-04")
+EXPIRY = os.getenv("OPTION_EXPIRY_CODE", "26811")
+EXPIRY_DATE = os.getenv("OPTION_EXPIRY_DATE", "2026-08-11")
 EXPIRY_TIME = "15:30"
 RISK_FREE_RATE = 0.1
 SPOT_SYMBOL = "NSE:NIFTY50-INDEX"
@@ -55,7 +55,7 @@ GEX_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_history_{TARGET_DATE}.json")
 # Weekly expiry codes to combine for the "Combined GEX" tab.
 # Format: Fyers weekly symbol codes (YYMDD) or monthly codes (YYMMM).
 # Update each week as expiries roll.
-GEX_MULTI_EXPIRY_CODES = ["26AUG", "26804", "26811"]
+GEX_MULTI_EXPIRY_CODES = ["26AUG", "26811", "26818"]
 GEX_COMBINED_HISTORY_FILE = os.path.join(OUTPUT_DIR, f"gex_combined_history_{TARGET_DATE}.json")
 GEX_COMBINED_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_combined_history_{TARGET_DATE}.json")
 
@@ -1607,7 +1607,19 @@ def fetch_candles(fyers, symbol, date_from, date_to=None, resolution="5"):
     try:
         resp = fyers.history(data=data)
         if resp.get("s") == "ok" and resp.get("candles"):
-            df = pd.DataFrame(resp["candles"], columns=["epoch","open","high","low","close","volume"])
+            candles = resp["candles"]
+            base_cols = ["epoch", "open", "high", "low", "close", "volume"]
+            n_cols = len(candles[0]) if candles else len(base_cols)
+            # Fyers sometimes returns a 7th column (open interest) for F&O
+            # symbols; build the column list to match whatever came back
+            # instead of hardcoding 6, so this doesn't break either way.
+            if n_cols == len(base_cols):
+                cols = base_cols
+            elif n_cols == len(base_cols) + 1:
+                cols = base_cols + ["oi"]
+            else:
+                cols = base_cols + [f"extra_{i}" for i in range(n_cols - len(base_cols))]
+            df = pd.DataFrame(candles, columns=cols)
             df["time"] = pd.to_datetime(df["epoch"], unit="s", utc=True).dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
             return df
     except Exception as e:
