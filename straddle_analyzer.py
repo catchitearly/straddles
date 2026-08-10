@@ -39,7 +39,7 @@ OFFSETS = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
 VWAP_LOOKBACK_TRADING_DAYS = 3       # trading days INCLUDING today used for the rolling straddle VWAP
 VWAP_LOOKBACK_CALENDAR_BUFFER = 12   # calendar days to request from the API to safely cover N trading days (weekends/holidays)
 
-LOT_SIZE = 65
+LOT_SIZE = 65*5
 GEX_STRIKE_COUNT = 40
 GEX_SCALE = 1e7
 GEX_SPOT_RANGE_POINTS = 1000
@@ -55,7 +55,7 @@ GEX_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_history_{TARGET_DATE}.json")
 # Weekly expiry codes to combine for the "Combined GEX" tab.
 # Format: Fyers weekly symbol codes (YYMDD) or monthly codes (YYMMM).
 # Update each week as expiries roll.
-GEX_MULTI_EXPIRY_CODES = ["26AUG", "26818", "26811"]
+GEX_MULTI_EXPIRY_CODES = ["26AUG", "26811", "26718"]
 GEX_COMBINED_HISTORY_FILE = os.path.join(OUTPUT_DIR, f"gex_combined_history_{TARGET_DATE}.json")
 GEX_COMBINED_HISTORY_DOCS_FILE = os.path.join("docs", f"gex_combined_history_{TARGET_DATE}.json")
 
@@ -86,10 +86,11 @@ REGIME_IRON_CONDOR_HEDGE_OFFSET = 200   # buy wings this much further out again 
 REGIME_SPREAD_WIDTH             = 200   # bull call / bear put spread width from ATM
 REGIME_LOSS_STOP_RUPEES         = 650
 REGIME_FLIP_CONFIRM_MINUTES     = 15
+REGIME_ENTRY_START_TIME         = "09:45"   # no new entries before this time
 REGIME_EOD_EXIT_TIME            = "15:25"
 REGIME_DIRECTION_OFFSETS_ABOVE  = [100, 200, 300, 400]    # strikes above ATM used for the direction signal
 REGIME_DIRECTION_OFFSETS_BELOW  = [-400, -300, -200, -100]  # strikes below ATM used for the direction signal
-REGIME_CHAIN_STRIKE_COUNT       = 70    # option-chain strike window (must comfortably cover ATM +/- 500)
+REGIME_CHAIN_STRIKE_COUNT       = 60    # option-chain strike window (must comfortably cover ATM +/- 500)
 
 REGIME_STATE_FILE      = os.path.join(OUTPUT_DIR, f"regime_state_{TARGET_DATE}.json")
 REGIME_STATE_DOCS_FILE = os.path.join("docs", f"regime_state_{TARGET_DATE}.json")
@@ -939,7 +940,9 @@ def run_regime_strategy(fyers, atm, results, gex_status, now_dt):
 
     # ---- open a new position if flat ----
     new_entry_notification = None
-    if position is None and regime is not None and now_time < dtime.fromisoformat(REGIME_EOD_EXIT_TIME):
+    entry_start = dtime.fromisoformat(REGIME_ENTRY_START_TIME)
+    eod_time = dtime.fromisoformat(REGIME_EOD_EXIT_TIME)
+    if position is None and regime is not None and entry_start <= now_time < eod_time:
         if regime == "POSITIVE":
             position = build_iron_condor_position(fyers, atm, now_str)
             if position:
