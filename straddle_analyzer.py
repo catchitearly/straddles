@@ -89,7 +89,7 @@ REGIME_FLIP_CONFIRM_MINUTES     = 15
 REGIME_EOD_EXIT_TIME            = "15:25"
 REGIME_DIRECTION_OFFSETS_ABOVE  = [100, 200, 300, 400]    # strikes above ATM used for the direction signal
 REGIME_DIRECTION_OFFSETS_BELOW  = [-400, -300, -200, -100]  # strikes below ATM used for the direction signal
-REGIME_CHAIN_STRIKE_COUNT       = 60    # option-chain strike window (must comfortably cover ATM +/- 500)
+REGIME_CHAIN_STRIKE_COUNT       = 70    # option-chain strike window (must comfortably cover ATM +/- 500)
 
 REGIME_STATE_FILE      = os.path.join(OUTPUT_DIR, f"regime_state_{TARGET_DATE}.json")
 REGIME_STATE_DOCS_FILE = os.path.join("docs", f"regime_state_{TARGET_DATE}.json")
